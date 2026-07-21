@@ -10,6 +10,8 @@ Run order: 0_import_sample.py → 0_import_educacao.py →
 """
 
 import os
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -19,7 +21,7 @@ import matplotlib.ticker as mticker
 import seaborn as sns
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-ROOT    = '/Users/pedroferreira/Dropbox (Personal)/MY PROJECTS/CONCURSOS/Data/PNADC'
+ROOT    = Path(__file__).resolve().parent.parent
 
 YEAR    = 2023   # ← change this to analyse a different year
 

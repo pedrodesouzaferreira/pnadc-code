@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
+from pathlib import Path
 
-folder = '/Users/pedroferreira/Dropbox (Personal)/MY PROJECTS/CONCURSOS/Data/PNADC'
+folder = Path(__file__).resolve().parent.parent
 
 YEAR = 2023   # ← change this to match the year downloaded by 0_import_educacao.py
 

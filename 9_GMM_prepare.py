@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 
-BASE_DIR = Path(r"C:\Users\ped205\Dropbox\MY PROJECTS\CONCURSOS PUBLICOS\Data\PNADC")
+BASE_DIR = Path(__file__).resolve().parent.parent
 CLEANED_DIR = BASE_DIR / "Cleaned Data"
 OUTPUT_PATH = CLEANED_DIR / "PNADC_prepared_for_GMM_v4.parquet"
 YEARS = [2023, 2024]

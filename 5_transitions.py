@@ -50,6 +50,8 @@ Run order: 0_import.py → 1_clean.py (YEAR=2024) → 5_transitions.py
 
 import os
 import warnings
+from pathlib import Path as ProjectPath
+
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -64,7 +66,7 @@ import seaborn as sns
 warnings.filterwarnings('ignore')
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-ROOT  = '/Users/pedroferreira/Dropbox (Personal)/MY PROJECTS/CONCURSOS/Data/PNADC'
+ROOT  = ProjectPath(__file__).resolve().parent.parent
 YEAR  = 2024
 MW    = 1_412   # 2024 minimum wage (R$)
 

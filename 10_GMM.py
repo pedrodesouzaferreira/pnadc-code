@@ -32,7 +32,7 @@ import pandas as pd
 from scipy.stats import norm
 
 
-BASE_DIR = Path(r"C:\Users\ped205\Dropbox\MY PROJECTS\CONCURSOS PUBLICOS\Data\PNADC")
+BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = BASE_DIR / "Cleaned Data" / "PNADC_prepared_for_GMM_v4.parquet"
 DEFAULT_MIN_WAGE = 1302.0
 

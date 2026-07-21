@@ -2,7 +2,18 @@
 * Analysis of PNADC data
 ***********************
 
-cd "C:\Users\ped205\Dropbox\MY PROJECTS\CONCURSOS PUBLICOS\Data\PNADC"
+* Run from either PNADC/ or PNADC/Code without a user-specific path.
+capture confirm file "Cleaned Data/PNADC_limpo_2023.dta"
+if _rc {
+    capture confirm file "../Cleaned Data/PNADC_limpo_2023.dta"
+    if !_rc {
+        cd ".."
+    }
+    else {
+        di as error "Run this do-file from the PNADC or PNADC/Code directory."
+        exit 601
+    }
+}
 
 
 ************************************

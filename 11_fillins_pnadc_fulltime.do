@@ -48,9 +48,21 @@ panel, deliberately skipping 2020 and 2021.
 * 0. User-editable paths and years
 * -------------------------------------------------------------------------
 
-* If automatic detection fails, set this to the PNADC root, e.g.
-* local PNADC_DIR "/n/home04/pferreira/PNADC"
-global PNADC_DIR "/n/home04/pferreira/PNADC"
+* Detect the project root when run from either PNADC/ or PNADC/Code.
+capture confirm file "Cleaned Data/PNADC_limpo_VD3004_7_2016.dta"
+if !_rc {
+    global PNADC_DIR "."
+}
+else {
+    capture confirm file "../Cleaned Data/PNADC_limpo_VD3004_7_2016.dta"
+    if !_rc {
+        global PNADC_DIR ".."
+    }
+    else {
+        di as error "Run this do-file from the PNADC or PNADC/Code directory."
+        exit 601
+    }
+}
 global CLEANED_DIR "${PNADC_DIR}/Cleaned Data"
 
 global file_2016 "${CLEANED_DIR}/PNADC_limpo_VD3004_7_2016.dta"
@@ -61,7 +73,12 @@ global file_2022 "${CLEANED_DIR}/PNADC_limpo_VD3004_7_2022.dta"
 global file_2023 "${CLEANED_DIR}/PNADC_limpo_2023.dta"
 global file_2024 "${CLEANED_DIR}/PNADC_limpo_2024.dta"
 global file_2025 "${CLEANED_DIR}/PNADC_limpo_VD3004_7_2025.dta"
-global DEFLATOR_XLS "${PNADC_DIR}/Raw Data/deflator_PNADC_2025.xls"
+global DEFLATOR_XLS "${PNADC_DIR}/Notas Técnicas/deflator_PNADC_2025.xls"
+capture confirm file "${DEFLATOR_XLS}"
+if _rc {
+    * Backward-compatible location used by older PNADC directory layouts.
+    global DEFLATOR_XLS "${PNADC_DIR}/Raw Data/deflator_PNADC_2025.xls"
+}
 
 global OUTDIR "${CLEANED_DIR}/summary_stats_i4"
 capture mkdir "${OUTDIR}"

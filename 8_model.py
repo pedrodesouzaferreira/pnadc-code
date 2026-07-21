@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,10 +8,10 @@ from scipy.stats import norm
 
 
 BIN_WIDTH = 500
-
-
-# Setting cd
-os.chdir("C:/Users/ped205/Dropbox/MY PROJECTS/CONCURSOS PUBLICOS/Data/PNADC")
+PNADC_DIR = Path(__file__).resolve().parent.parent
+CLEANED_DIR = PNADC_DIR / "Cleaned Data"
+FIGURES_DIR = PNADC_DIR / "Output" / "Figures"
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Loading data
 columns_to_keep = [
@@ -22,8 +22,8 @@ columns_to_keep = [
     "empregado_setor_pub",
     "empregado_setor_priv",
 ]
-df = pd.read_csv("Cleaned Data/PNADC_limpo_2024.csv", usecols=columns_to_keep)
-df_2023 = pd.read_csv("Cleaned Data/PNADC_limpo_2023.csv", usecols=columns_to_keep)
+df = pd.read_csv(CLEANED_DIR / "PNADC_limpo_2024.csv", usecols=columns_to_keep)
+df_2023 = pd.read_csv(CLEANED_DIR / "PNADC_limpo_2023.csv", usecols=columns_to_keep)
 df = pd.concat([df, df_2023], ignore_index=True)
 
 # Keeping needed columns
@@ -179,4 +179,4 @@ ax.set_ylabel("Destination wage (public sector, BRL)")
 ax.legend()
 ax.set_title(f"Switching threshold vs. observed destination wages\nBins of BRL {BIN_WIDTH:,.0f}")
 plt.tight_layout()
-plt.savefig("Output/Figures/threshold_plot.pdf")
+plt.savefig(FIGURES_DIR / "threshold_plot.pdf")
