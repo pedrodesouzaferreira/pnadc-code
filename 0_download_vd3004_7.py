@@ -3,6 +3,9 @@ from pathlib import Path
 
 import pandas as pd
 
+# VD3004 is the variable that indicates complete tertiary education
+# it's meant to make the download of the microdados more manageable, 
+# since the full dataset is very large.
 
 MICRODADOS_TABLE = "basedosdados.br_ibge_pnadc.microdados"
 DEFAULT_VD3004 = 7
