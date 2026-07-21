@@ -1,12 +1,12 @@
 """
-2_analyze.py  –  Concursos públicos & public employment analysis
+4_analyze.py  –  Concursos públicos & public employment analysis
 ================================================================
 Outputs:
   Output/Tables/  → LaTeX tables (.tex)
   Output/Figures/ → PNG figures
 
 Run order: 0_import_sample.py → 0_import_educacao.py →
-           1_clean.py → 1_clean_educacao.py → 2_analyze.py
+           1_clean.py → 1_clean_educacao.py → 4_analyze.py
 """
 
 import os

@@ -1,5 +1,5 @@
 """
-3_transitions.py  –  Labor-market transition analysis, PNADC 2024
+5_transitions.py  –  Labor-market transition analysis, PNADC 2024
 ==================================================================
 Analyzes job-to-job and broader labor-market state transitions
 exploiting the rotating panel structure of PNADC (up to 5 consecutive
@@ -44,7 +44,7 @@ Outputs (YEAR = 2024):
   Output/Tables/   → LaTeX tables (.tex)
   Output/Figures/  → PNG figures
 
-Run order: 0_import.py → 1_clean.py (YEAR=2024) → 3_transitions.py
+Run order: 0_import.py → 1_clean.py (YEAR=2024) → 5_transitions.py
            (falls back to raw CSV if cleaned file is absent)
 """
 
