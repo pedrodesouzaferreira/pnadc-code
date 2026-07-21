@@ -415,7 +415,7 @@ def parse_args() -> argparse.Namespace:
         "--deflator",
         type=Path,
         default=None,
-        help="Defaults to PNADC/Notas Técnicas/deflator_PNADC_2025.xls.",
+        help="Defaults to PNADC/Raw Data/deflator_PNADC_2025.xls.",
     )
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
     parser.add_argument(
@@ -438,7 +438,7 @@ def main() -> None:
     deflator_path = (
         args.deflator.expanduser().resolve()
         if args.deflator is not None
-        else pnadc_dir / "Notas Técnicas" / "deflator_PNADC_2025.xls"
+        else pnadc_dir / "Raw Data" / "deflator_PNADC_2025.xls"
     )
     print(f"PNADC directory: {pnadc_dir}")
     print(f"Deflator: {deflator_path}")

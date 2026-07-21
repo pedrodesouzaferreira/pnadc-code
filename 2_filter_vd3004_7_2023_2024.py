@@ -2,8 +2,9 @@
 
 The full cleaned PNADC Stata files are very large.  This script reads them in
 chunks, keeps ``VD3004 == 7`` (renamed ``nivel_instrucao`` by the cleaning
-pipeline), and writes one compressed Parquet file per year.  Parquet is used
-because a Stata file cannot be appended safely chunk by chunk.
+pipeline), and writes compressed Parquet and Stata files for each year.  The
+chunked filter is written to Parquet first because a Stata file cannot be
+appended safely; the completed filtered subset is then exported as Stata 118.
 
 Default inputs
 --------------
@@ -14,6 +15,8 @@ Default outputs
 ---------------
 Cleaned Data/PNADC_limpo_VD3004_7_2023.parquet
 Cleaned Data/PNADC_limpo_VD3004_7_2024.parquet
+Cleaned Data/PNADC_limpo_VD3004_7_2023.dta
+Cleaned Data/PNADC_limpo_VD3004_7_2024.dta
 
 Run from any directory with, for example::
 
@@ -68,7 +71,8 @@ def education_column(columns: list[str]) -> str:
 
 def filter_year(
     input_path: Path,
-    output_path: Path,
+    parquet_path: Path,
+    dta_path: Path,
     year: int,
     chunk_size: int,
     overwrite: bool,
@@ -81,15 +85,21 @@ def filter_year(
             "If this is a Dropbox online-only placeholder, make it available "
             "offline and run the script again."
         )
-    if output_path.exists() and not overwrite:
+    existing_outputs = [path for path in (parquet_path, dta_path) if path.exists()]
+    if existing_outputs and not overwrite:
         raise FileExistsError(
-            f"Output already exists: {output_path}. Use --overwrite to replace it."
+            "Output already exists: "
+            + ", ".join(map(str, existing_outputs))
+            + ". Use --overwrite to replace it."
         )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    if temporary_path.exists():
-        temporary_path.unlink()
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    dta_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_parquet = parquet_path.with_suffix(parquet_path.suffix + ".tmp")
+    temporary_dta = dta_path.with_suffix(dta_path.suffix + ".tmp")
+    for temporary in (temporary_parquet, temporary_dta):
+        if temporary.exists():
+            temporary.unlink()
 
     writer: pq.ParquetWriter | None = None
     output_schema: pa.Schema | None = None
@@ -115,7 +125,7 @@ def filter_year(
             if writer is None:
                 output_schema = table.schema
                 writer = pq.ParquetWriter(
-                    temporary_path,
+                    temporary_parquet,
                     output_schema,
                     compression="zstd",
                     use_dictionary=True,
@@ -132,12 +142,24 @@ def filter_year(
             raise RuntimeError(f"No observations with VD3004 == 7 found in {input_path}")
         writer.close()
         writer = None
-        os.replace(temporary_path, output_path)
+
+        print(f"  {year}: converting filtered Parquet to Stata 118")
+        filtered = pd.read_parquet(temporary_parquet)
+        filtered.to_stata(
+            temporary_dta,
+            write_index=False,
+            version=118,
+        )
+        del filtered
+
+        os.replace(temporary_parquet, parquet_path)
+        os.replace(temporary_dta, dta_path)
     finally:
         if writer is not None:
             writer.close()
-        if temporary_path.exists():
-            temporary_path.unlink()
+        for temporary in (temporary_parquet, temporary_dta):
+            if temporary.exists():
+                temporary.unlink()
 
     return rows_read, rows_kept
 
@@ -155,7 +177,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-template",
         default="PNADC_limpo_VD3004_7_{year}.parquet",
-        help="Filename template inside Cleaned Data (use {year}).",
+        help="Parquet filename template inside Cleaned Data (use {year}).",
+    )
+    parser.add_argument(
+        "--dta-output-template",
+        default="PNADC_limpo_VD3004_7_{year}.dta",
+        help="Stata filename template inside Cleaned Data (use {year}).",
     )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -170,11 +197,16 @@ def main() -> None:
     print(f"Cleaned-data directory: {cleaned_dir}")
     for year in sorted(set(args.years)):
         input_path = cleaned_dir / args.input_template.format(year=year)
-        output_path = cleaned_dir / args.output_template.format(year=year)
-        print(f"Filtering {input_path.name} -> {output_path.name}")
+        parquet_path = cleaned_dir / args.output_template.format(year=year)
+        dta_path = cleaned_dir / args.dta_output_template.format(year=year)
+        print(
+            f"Filtering {input_path.name} -> "
+            f"{parquet_path.name} and {dta_path.name}"
+        )
         rows_read, rows_kept = filter_year(
             input_path=input_path,
-            output_path=output_path,
+            parquet_path=parquet_path,
+            dta_path=dta_path,
             year=year,
             chunk_size=args.chunk_size,
             overwrite=args.overwrite,
