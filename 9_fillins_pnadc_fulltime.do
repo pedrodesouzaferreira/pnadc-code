@@ -1,0 +1,516 @@
+version 16.0
+clear all
+set more off
+
+/*
+Purpose
+-------
+Create PNADC summary statistics for the I4 treatment-text fill-ins:
+
+  A. Wage information: median and p90 monthly usual earnings, pooled
+     2022-2025 Q3 and expressed in 2025 Q3 prices.
+  B. Stability information: probability of unemployment 12 months later.
+  C. Entry probabilities: public/private employment 12 months later.
+
+Inputs
+------
+Cleaned Stata files:
+  PNADC_limpo_VD3004_7_2016.dta, PNADC_limpo_VD3004_7_2017.dta,
+  PNADC_limpo_VD3004_7_2018.dta, PNADC_limpo_VD3004_7_2019.dta,
+  PNADC_limpo_VD3004_7_2022.dta, PNADC_limpo_2023.dta,
+  PNADC_limpo_2024.dta, PNADC_limpo_VD3004_7_2025.dta.
+Deflator:
+  deflator_PNADC_2025.xls
+
+The code also accepts the common typo PNADC_limp_202X.dta.
+
+Definitions follow the Python cleaning pipeline:
+  - Public employees:  redefined in this script as statutory public servants,
+                       police/firefighter occupations, and CLT government jobs.
+  - Private employees: empregado_setor_priv == 1, from VD4009 in 1, 2.
+  - Unemployed:        desocupado == 1, from VD4002 == 2.
+  - Higher education:  nivel_instrucao == 7, "Superior completo".
+  - Exam search:       buscando_via_concurso == 1, from V4072A == 5.
+
+Weights
+-------
+All statistics use PNADC weight peso. Transition statistics use the
+baseline-period weight.
+
+Timing
+------
+Wages pool Q3 observations from 2022, 2023, 2024, and 2025. Transition
+statistics use same-person observations four quarters apart in the expanded
+panel, deliberately skipping 2020 and 2021.
+*/
+
+* -------------------------------------------------------------------------
+* 0. User-editable paths and years
+* -------------------------------------------------------------------------
+
+* If automatic detection fails, set this to the PNADC root, e.g.
+* local PNADC_DIR "/n/home04/pferreira/PNADC"
+global PNADC_DIR "/n/home04/pferreira/PNADC"
+global CLEANED_DIR "${PNADC_DIR}/Cleaned Data"
+
+global file_2016 "${CLEANED_DIR}/PNADC_limpo_VD3004_7_2016.dta"
+global file_2017 "${CLEANED_DIR}/PNADC_limpo_VD3004_7_2017.dta"
+global file_2018 "${CLEANED_DIR}/PNADC_limpo_VD3004_7_2018.dta"
+global file_2019 "${CLEANED_DIR}/PNADC_limpo_VD3004_7_2019.dta"
+global file_2022 "${CLEANED_DIR}/PNADC_limpo_VD3004_7_2022.dta"
+global file_2023 "${CLEANED_DIR}/PNADC_limpo_2023.dta"
+global file_2024 "${CLEANED_DIR}/PNADC_limpo_2024.dta"
+global file_2025 "${CLEANED_DIR}/PNADC_limpo_VD3004_7_2025.dta"
+global DEFLATOR_XLS "${PNADC_DIR}/Raw Data/deflator_PNADC_2025.xls"
+
+global OUTDIR "${CLEANED_DIR}/summary_stats_i4"
+capture mkdir "${OUTDIR}"
+
+di as text "Cleaned data directory: ${CLEANED_DIR}"
+di as text "Output directory:       ${OUTDIR}"
+
+local wage_year 2022_2025_q3_to_2025q3
+local wage_quarter 3
+local wage_first_visit_only 0
+local output_tag _v4
+local base_year 2023_2024
+local follow_year 2024_2025
+
+* -------------------------------------------------------------------------
+* 1. Small helper programs: weighted percentiles and weighted means
+* -------------------------------------------------------------------------
+
+capture program drop wpctile_one
+program define wpctile_one, rclass
+    version 16.0
+    syntax varname [if] [in], Wvar(name) Pcts(numlist)
+    marksample touse
+
+    preserve
+        keep if `touse'
+        keep if !missing(`varlist') & !missing(`wvar') & `wvar' > 0
+        keep `varlist' `wvar'
+        quietly count
+        local nobs = r(N)
+
+        foreach p of numlist `pcts' {
+            return scalar p`p' = .
+        }
+        return scalar N = `nobs'
+        return scalar wN = 0
+
+        if `nobs' == 0 {
+            restore
+            exit
+        }
+
+        sort `varlist'
+        tempvar w cum hit
+        gen double `w' = `wvar'
+        gen double `cum' = sum(`w')
+        quietly summarize `w', meanonly
+        local total = r(sum)
+        return scalar wN = `total'
+
+        foreach p of numlist `pcts' {
+            gen byte `hit' = (`cum' >= (`p' / 100) * `total')
+            quietly summarize `varlist' if `hit', meanonly
+            return scalar p`p' = r(min)
+            drop `hit'
+        }
+    restore
+end
+
+capture program drop wshare_one
+program define wshare_one, rclass
+    version 16.0
+    syntax varname [if] [in], Wvar(name)
+    marksample touse
+
+    tempvar den num
+    quietly gen double `den' = `wvar' if `touse' & !missing(`varlist') & !missing(`wvar') & `wvar' > 0
+    quietly gen double `num' = `varlist' * `den'
+
+    quietly count if !missing(`den')
+    local nobs = r(N)
+    quietly summarize `den', meanonly
+    local wtotal = r(sum)
+    quietly summarize `num', meanonly
+    local numerator = r(sum)
+
+    return scalar N = `nobs'
+    return scalar wN = `wtotal'
+    if `wtotal' > 0 {
+        return scalar pct = 100 * `numerator' / `wtotal'
+    }
+    else {
+        return scalar pct = .
+    }
+end
+
+capture program drop standardize_public_sector_vars
+program define standardize_public_sector_vars
+    version 16.0
+
+    capture confirm variable V4025
+    if _rc {
+        capture confirm variable v4025
+        if !_rc {
+            rename v4025 V4025
+        }
+    }
+
+    capture confirm variable V4010
+    if _rc {
+        capture confirm variable v4010
+        if !_rc {
+            rename v4010 V4010
+        }
+    }
+end
+
+capture program drop define_public_sector
+program define define_public_sector
+    version 16.0
+
+    standardize_public_sector_vars
+
+    tempvar pub_universe occ_code public_rule
+    gen byte `pub_universe' = !missing(empregado_setor_pub)
+
+    capture confirm numeric variable V4010
+    if !_rc {
+        gen double `occ_code' = V4010
+    }
+    else {
+        gen double `occ_code' = real(V4010)
+    }
+
+    gen byte `public_rule' = ///
+        servidor_publico_estatutario == 1 | ///
+        (inlist(`occ_code', 5412, 511, 512, 411, 412) & posicao_trab_principal == 2) | ///
+        (posicao_trab_principal == 4 & carteira_assinada == 1)
+
+    replace empregado_setor_pub = 0 if `pub_universe'
+    replace empregado_setor_pub = 1 if `pub_universe' & `public_rule'
+
+    * Temporary workers are not coded as public jobs in this definition.
+    replace empregado_setor_pub = 0 if `pub_universe' & V4025 == 1
+end
+
+tempfile results_tmp
+tempname posth
+postfile `posth' ///
+    str12 block ///
+    str45 panel ///
+    str35 group ///
+    str35 statistic ///
+    str20 unit ///
+    str30 source_period ///
+    double value ///
+    double N ///
+    double weighted_N ///
+    using `"`results_tmp'"', replace
+
+* -------------------------------------------------------------------------
+* 2. Treatment A: wage distribution, pooled 2022-2025 Q3
+* -------------------------------------------------------------------------
+
+* CO2 converts habitual earnings to average prices of the last year in the
+* deflator file. Normalize by 2025 Q3 so that 2025 Q3 has factor 1.
+tempfile deflator_2025q3 deflator_target
+
+capture noisily import excel using `"${DEFLATOR_XLS}"', ///
+    sheet("deflator") firstrow case(lower) clear
+if _rc {
+    import excel using `"${DEFLATOR_XLS}"', firstrow case(lower) clear
+}
+
+capture confirm variable trim
+if !_rc {
+    rename trim trimestre
+}
+capture confirm variable uf
+if !_rc {
+    rename uf id_uf
+}
+
+foreach v in ano trimestre id_uf co2 {
+    capture confirm variable `v'
+    if _rc {
+        di as error "Deflator file is missing required variable `v'."
+        describe
+        exit 111
+    }
+    capture confirm numeric variable `v'
+    if _rc {
+        destring `v', replace force dpcomma
+    }
+}
+
+gen double co2_raw = co2
+keep if inlist(ano, 2022, 2023, 2024, 2025)
+
+preserve
+    keep if ano == 2025 & trimestre == `wage_quarter'
+    keep id_uf co2_raw
+    rename co2_raw co2_2025q3
+    duplicates drop id_uf, force
+    save `"`deflator_target'"', replace
+restore
+
+merge m:1 id_uf using `"`deflator_target'"', keep(master match) nogen
+gen double deflator_wage = co2_raw / co2_2025q3
+keep ano trimestre id_uf co2_raw co2_2025q3 deflator_wage
+keep if trimestre == `wage_quarter'
+duplicates drop ano trimestre id_uf, force
+save `"`deflator_2025q3'"', replace
+
+use ano trimestre id_uf num_entrevista peso idade nivel_instrucao ///
+    renda_habitual_principal empregado_setor_pub empregado_setor_priv ///
+    horas_habituais_principal servidor_publico_estatutario V4025 V4010 ///
+    posicao_trab_principal carteira_assinada ///
+    using `"${file_2022}"', clear
+standardize_public_sector_vars
+keep if nivel_instrucao == 7 & trimestre == `wage_quarter'
+
+foreach year in 2023 2024 2025 {
+    local public_sector_raw_vars "V4025 V4010"
+    if inlist(`year', 2023, 2024) {
+        local public_sector_raw_vars "v4025 v4010"
+    }
+    preserve
+    use ano trimestre id_uf num_entrevista peso idade nivel_instrucao ///
+        renda_habitual_principal empregado_setor_pub empregado_setor_priv ///
+        horas_habituais_principal servidor_publico_estatutario `public_sector_raw_vars' ///
+        posicao_trab_principal carteira_assinada ///
+        using `"${file_`year'}"', clear
+    standardize_public_sector_vars
+    keep if nivel_instrucao == 7 & trimestre == `wage_quarter'
+    tempfile wage_file_`year'
+    save `"`wage_file_`year''"', replace
+    restore
+    append using `"`wage_file_`year''"', force
+}
+
+keep if inlist(ano, 2022, 2023, 2024, 2025) & trimestre == `wage_quarter'
+if `wage_first_visit_only' {
+    keep if num_entrevista == 1
+}
+
+merge m:1 ano trimestre id_uf using `"`deflator_2025q3'"', keep(master match) nogen
+quietly count if missing(deflator_wage)
+if r(N) > 0 {
+    di as error "Some wage observations did not match the PNADC deflator."
+    exit 459
+}
+
+compress
+
+define_public_sector
+
+gen byte superior = (nivel_instrucao == 7) if !missing(nivel_instrucao)
+gen byte age_22_24 = inrange(idade, 22, 24) if !missing(idade)
+gen double wage = renda_habitual_principal * deflator_wage
+gen fulltime = horas_habituais_principal >= 35 if !missing(horas_habituais_principal)
+
+wpctile_one wage if empregado_setor_pub == 1 & superior == 1 & fulltime == 1 & wage > 0 & trimestre == `wage_quarter', wvar(peso) pcts(50 90)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar A_all_pub_median = r(p50)
+scalar A_all_pub_p90 = r(p90)
+post `posth' ("A_wages") ("Higher ed, employed") ("Public sector")  ("median_salary") ("BRL") ("`wage_year'") (A_all_pub_median) (`stat_N') (`stat_wN')
+post `posth' ("A_wages") ("Higher ed, employed") ("Public sector")  ("p90_salary")    ("BRL") ("`wage_year'") (A_all_pub_p90) (`stat_N') (`stat_wN')
+
+wpctile_one wage if empregado_setor_priv == 1 & superior == 1 & fulltime == 1 & wage > 0 & trimestre == `wage_quarter', wvar(peso) pcts(50 90)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar A_all_priv_median = r(p50)
+scalar A_all_priv_p90 = r(p90)
+post `posth' ("A_wages") ("Higher ed, employed") ("Private sector") ("median_salary") ("BRL") ("`wage_year'") (A_all_priv_median) (`stat_N') (`stat_wN')
+post `posth' ("A_wages") ("Higher ed, employed") ("Private sector") ("p90_salary")    ("BRL") ("`wage_year'") (A_all_priv_p90) (`stat_N') (`stat_wN')
+
+wpctile_one wage if empregado_setor_pub == 1 & superior == 1 & fulltime == 1 & age_22_24 == 1 & wage > 0 & trimestre == `wage_quarter', wvar(peso) pcts(50 90)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar A_young_pub_median = r(p50)
+scalar A_young_pub_p90 = r(p90)
+post `posth' ("A_wages") ("Higher ed, age 22-24, employed") ("Public sector")  ("median_salary") ("BRL") ("`wage_year'") (A_young_pub_median) (`stat_N') (`stat_wN')
+post `posth' ("A_wages") ("Higher ed, age 22-24, employed") ("Public sector")  ("p90_salary")    ("BRL") ("`wage_year'") (A_young_pub_p90) (`stat_N') (`stat_wN')
+
+wpctile_one wage if empregado_setor_priv == 1 & superior == 1 & fulltime == 1 & age_22_24 == 1 & wage > 0 & trimestre == `wage_quarter', wvar(peso) pcts(50 90)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar A_young_priv_median = r(p50)
+scalar A_young_priv_p90 = r(p90)
+post `posth' ("A_wages") ("Higher ed, age 22-24, employed") ("Private sector") ("median_salary") ("BRL") ("`wage_year'") (A_young_priv_median) (`stat_N') (`stat_wN')
+post `posth' ("A_wages") ("Higher ed, age 22-24, employed") ("Private sector") ("p90_salary")    ("BRL") ("`wage_year'") (A_young_priv_p90) (`stat_N') (`stat_wN')
+
+* -------------------------------------------------------------------------
+* 3. Build t -> t+4 panel for Treatments B and C
+* -------------------------------------------------------------------------
+
+use id_pessoa ano trimestre peso idade nivel_instrucao ///
+        desocupado empregado_setor_pub empregado_setor_priv ///
+        buscando_via_concurso tomou_providencia_busca metodo_busca_emprego horas_habituais_principal ///
+        servidor_publico_estatutario V4025 V4010 posicao_trab_principal carteira_assinada ///
+    using `"${file_2016}"', clear
+standardize_public_sector_vars
+
+foreach year in 2017 2018 2019 2022 2023 2024 2025 {
+    local public_sector_raw_vars "V4025 V4010"
+    if inlist(`year', 2023, 2024) {
+        local public_sector_raw_vars "v4025 v4010"
+    }
+    preserve
+    use id_pessoa ano trimestre peso idade nivel_instrucao ///
+            desocupado empregado_setor_pub empregado_setor_priv ///
+            buscando_via_concurso tomou_providencia_busca metodo_busca_emprego horas_habituais_principal ///
+            servidor_publico_estatutario `public_sector_raw_vars' posicao_trab_principal carteira_assinada ///
+        using "${file_`year'}", clear
+    standardize_public_sector_vars
+    keep if nivel_instrucao == 7
+    tempfile file_`year'
+    save `"`file_`year''"', replace
+    restore
+    append using `"`file_`year''"', force
+}
+
+g int time = ano * 4 + trimestre
+sort id_pessoa time
+xtset id_pessoa time
+
+define_public_sector
+
+g superior = (nivel_instrucao == 7) if !missing(nivel_instrucao)
+g age_22_24 = inrange(idade, 22, 24) if !missing(idade)
+g fulltime = horas_habituais_principal >= 35 if !missing(horas_habituais_principal)
+g unemp_f4 = f4.desocupado if !missing(f4.desocupado)
+g priv_f4 = f4.empregado_setor_priv if !missing(f4.empregado_setor_priv)
+g pub_f4 = f4.empregado_setor_pub if !missing(f4.empregado_setor_pub)
+g horas_habituais_principal_f4 = f4.horas_habituais_principal if !missing(f4.horas_habituais_principal)
+g byte fulltime_f4 = horas_habituais_principal_f4 >= 35 if !missing(horas_habituais_principal_f4)
+g byte pub_ft_f4 = 0 if !missing(pub_f4)
+replace pub_ft_f4 = 1 if pub_f4 == 1 & fulltime_f4 == 1
+replace pub_ft_f4 = . if pub_f4 == 1 & missing(fulltime_f4)
+g byte priv_ft_f4 = 0 if !missing(priv_f4)
+replace priv_ft_f4 = 1 if priv_f4 == 1 & fulltime_f4 == 1
+replace priv_ft_f4 = . if priv_f4 == 1 & missing(fulltime_f4)
+by id_pessoa (time): egen byte number_obs = count(id_pessoa)
+
+* Job-search groups for Treatment C. With microdados only, "regularly studies
+* for exams" is proxied by the PNADC search-method flag V4072A == 5:
+* buscando_via_concurso == 1.
+// gen byte job_search = (desocupado == 1) if !missing(desocupado)
+gen byte job_search = (tomou_providencia_busca == 1) 
+gen byte exam_search = (job_search == 1 & superior == 1 & buscando_via_concurso == 1)
+
+* "Focuses on private vacancies" proxy: unemployed higher-ed respondents whose
+* main search method is direct employer contact, ads, private agency/syndicate,
+* or relatives/friends. This excludes concurso, own business, other, and
+* no effective search action.
+gen byte private_focus = (job_search == 1 & superior == 1 & ///
+    inlist(metodo_busca_emprego, 1, 2, 3, 4, 6))
+
+format id_pessoa %24.0g
+
+compress
+* Panel output is intentionally not saved; final output is CSV only.
+
+
+* -------------------------------------------------------------------------
+* 4. Treatment B: unemployment 12 months later
+* -------------------------------------------------------------------------
+
+wshare_one unemp_f4 if empregado_setor_pub == 1 & superior == 1 & fulltime == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar B_all_pub_unemp = r(pct)
+post `posth' ("B_stability") ("Higher ed, employed, full time") ("Public sector") ("unemployed_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (B_all_pub_unemp) (`stat_N') (`stat_wN')
+
+wshare_one unemp_f4 if empregado_setor_priv == 1 & superior == 1  & fulltime == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar B_all_priv_unemp = r(pct)
+post `posth' ("B_stability") ("Higher ed, employed, full time") ("Private sector") ("unemployed_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (B_all_priv_unemp) (`stat_N') (`stat_wN')
+
+wshare_one unemp_f4 if empregado_setor_pub == 1 & superior == 1 & age_22_24 == 1 & fulltime == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar B_young_pub_unemp = r(pct)
+post `posth' ("B_stability") ("Higher ed, age 22-24, employed, full time") ("Public sector") ("unemployed_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (B_young_pub_unemp) (`stat_N') (`stat_wN')
+
+wshare_one unemp_f4 if empregado_setor_priv == 1 & superior == 1 & age_22_24 == 1 & fulltime == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar B_young_priv_unemp = r(pct)
+post `posth' ("B_stability") ("Higher ed, age 22-24, employed, full time") ("Private sector") ("unemployed_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (B_young_priv_unemp) (`stat_N') (`stat_wN')
+
+* -------------------------------------------------------------------------
+* 5. Treatment C: destination sector 12 months later
+* -------------------------------------------------------------------------
+
+wshare_one pub_ft_f4 if exam_search == 1 & superior == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar C_all_exam_pub = r(pct)
+post `posth' ("C_entry") ("Higher ed job seekers") ("Exam search") ("public_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (C_all_exam_pub) (`stat_N') (`stat_wN')
+
+wshare_one priv_ft_f4 if exam_search == 1 & superior == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar C_all_exam_priv = r(pct)
+post `posth' ("C_entry") ("Higher ed job seekers") ("Exam search") ("private_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (C_all_exam_priv) (`stat_N') (`stat_wN')
+
+wshare_one pub_ft_f4 if private_focus == 1 & superior == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar C_all_privatefocus_pub = r(pct)
+post `posth' ("C_entry") ("Higher ed job seekers") ("Private-focus search") ("public_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (C_all_privatefocus_pub) (`stat_N') (`stat_wN')
+
+wshare_one priv_ft_f4 if private_focus == 1 & superior == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar C_all_privatefocus_priv = r(pct)
+post `posth' ("C_entry") ("Higher ed job seekers") ("Private-focus search") ("private_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (C_all_privatefocus_priv) (`stat_N') (`stat_wN')
+
+wshare_one pub_ft_f4 if exam_search == 1 & age_22_24 == 1 & superior == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar C_young_exam_pub = r(pct)
+post `posth' ("C_entry") ("Higher ed job seekers, age 22-24") ("Exam search") ("public_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (C_young_exam_pub) (`stat_N') (`stat_wN')
+
+wshare_one priv_ft_f4 if exam_search == 1 & age_22_24 == 1 & superior == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar C_young_exam_priv = r(pct)
+post `posth' ("C_entry") ("Higher ed job seekers, age 22-24") ("Exam search") ("private_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (C_young_exam_priv) (`stat_N') (`stat_wN')
+
+wshare_one pub_ft_f4 if private_focus == 1 & age_22_24 == 1 & superior == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar C_young_privatefocus_pub = r(pct)
+post `posth' ("C_entry") ("Higher ed job seekers, age 22-24") ("Private-focus search") ("public_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (C_young_privatefocus_pub) (`stat_N') (`stat_wN')
+
+wshare_one priv_ft_f4 if private_focus == 1 & age_22_24 == 1 & superior == 1, wvar(peso)
+local stat_N = r(N)
+local stat_wN = r(wN)
+scalar C_young_privatefocus_priv = r(pct)
+post `posth' ("C_entry") ("Higher ed job seekers, age 22-24") ("Private-focus search") ("private_after_12m") ("per_100") ("`base_year'_to_`follow_year'") (C_young_privatefocus_priv) (`stat_N') (`stat_wN')
+
+postclose `posth'
+
+* -------------------------------------------------------------------------
+* 6. Export machine-readable CSV output
+* -------------------------------------------------------------------------
+
+use `"`results_tmp'"', clear
+gen double value_rounded = .
+replace value_rounded = round(value) if unit == "BRL"
+replace value_rounded = round(value) if unit == "per_100"
+order block panel group statistic unit source_period value value_rounded N weighted_N
+format value %12.3f
+format value_rounded %12.0f
+format weighted_N %16.0fc
+
+export delimited using `"${OUTDIR}/pnadc_i4_fillins_long_fulltime`output_tag'.csv"', replace 
