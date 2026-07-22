@@ -1,5 +1,5 @@
 """
-paper_analysis.py  --  Consolidated analysis for "The Value of Government Jobs"
+3_paper_analysis.py  --  Consolidated analysis for "The Value of Government Jobs"
 ==============================================================================
 Single script that regenerates EVERY figure and table used in the paper
 (20260428_LaborPaper.tex) and the presentation (20260428_Labor_Presentation.tex).
@@ -9,11 +9,11 @@ with one file. The paper-relevant outputs, and where they used to come from, are
 
     figure_1_transition_probabilities.pdf     (Panel A, detailed 7-state)   <- pnadc_superpc/analysis.py
     figure_1_transition_probabilities_2.pdf   (Panel B, collapsed U/Priv/Pub)<- pnadc_superpc/analysis.py
-    figure_2_delta_renda_relative_w.pdf       (wage-change % at pub<->priv)  <- 7_analysis.do
-    figure_3_renda_USD.pdf                     (wage distributions, USD)      <- 7_analysis.do
+    figure_2_delta_renda_relative_w.pdf       (wage-change % at pub<->priv)  <- 6_analysis.do
+    figure_3_renda_USD.pdf                     (wage distributions, USD)      <- 6_analysis.do
     table_1_renda_USD.tex                      (wage summary stats, USD)      <- was a MANUAL .tex; now generated,
                                                                                 and FIXED to add U->Public / U->Private
-    table_V10E.tex                             (reservation wages & a/beta)   <- 10_GMM.py
+    table_V10E.tex                             (reservation wages & a/beta)   <- 9_GMM.py
 
 Data source
 -----------
@@ -31,14 +31,14 @@ transition matrices).
 
 Usage
 -----
-    python paper_analysis.py                       # all figures + table_1, GMM with default grid
-    python paper_analysis.py --no-gmm              # skip the (slow) bootstrap GMM table
-    python paper_analysis.py --bootstrap 500 --alphas 0.03 0.06 --lambda0s 0.50 0.80
+    python 3_paper_analysis.py                       # all figures + table_1, GMM with default grid
+    python 3_paper_analysis.py --no-gmm              # skip the (slow) bootstrap GMM table
+    python 3_paper_analysis.py --bootstrap 500 --alphas 0.03 0.06 --lambda0s 0.50 0.80
 
 NOTE (author): this consolidation was written without being run against the full
 data (the .dta files are too large for the machine it was drafted on). Please run
 it once and eyeball the figures/tables against the previous versions before
-deleting the superseded reference scripts (7_analysis.do, 10_GMM.py).
+deleting the superseded reference scripts (6_analysis.do, 9_GMM.py).
 """
 
 import argparse
@@ -64,7 +64,7 @@ F_DIR.mkdir(parents=True, exist_ok=True)
 T_DIR.mkdir(parents=True, exist_ok=True)
 
 YEARS = [2023, 2024]
-USD_RATE = 5.0            # BRL per USD (matches 7_analysis.do: renda_USD = renda / 5)
+USD_RATE = 5.0            # BRL per USD (matches 6_analysis.do: renda_USD = renda / 5)
 MIN_WAGE = 1302.0         # 2023 statutory monthly minimum wage (BRL), GMM trimming anchor
 
 # Columns pulled from each .dta (keep small for memory)
@@ -215,7 +215,7 @@ def _plot_heatmap(prob, figsize, out_path):
 # Wage variables (winsorized, USD, deltas) + transition dummies
 # ---------------------------------------------------------------------------
 def build_wage_frame(df):
-    """Replicates the wage construction in 7_analysis.do (sections 1.1-1.3)."""
+    """Replicates the wage construction in 6_analysis.do (sections 1.1-1.3)."""
     df = df.copy()
     df["st_col"] = collapsed_state(df)
     df = add_next_period(df, ["st_col", "renda_habitual_principal"])
@@ -398,7 +398,7 @@ def make_table_1(df, weighted=True):
 
 
 # ---------------------------------------------------------------------------
-# table_V10E -- reservation wages & a/beta (GMM). Ported from 10_GMM.py.
+# table_V10E -- reservation wages & a/beta (GMM). Ported from 9_GMM.py.
 # ---------------------------------------------------------------------------
 def _upper_tail_imr(z):
     return float(np.exp(norm.logpdf(z) - norm.logsf(z)))

@@ -19,8 +19,8 @@ It then prints a LaTeX-formatted table with:
 
 Examples
 --------
-python 10_GMM.py --alphas 0.03 0.06 --lambda0s 0.50 0.80 --bootstrap 300
-python 10_GMM.py --alphas 0.03 0.06 --lambda0s 0.50 0.80 --bootstrap 500 --output-tex table_v10E.tex
+python 9_GMM.py --alphas 0.03 0.06 --lambda0s 0.50 0.80 --bootstrap 300
+python 9_GMM.py --alphas 0.03 0.06 --lambda0s 0.50 0.80 --bootstrap 500 --output-tex table_v10E.tex
 """
 
 import argparse

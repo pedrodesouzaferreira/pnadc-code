@@ -1,5 +1,5 @@
 """
-estimate_ctmc_rates.py  --  Continuous-time hazard rates from PNADC's quarterly panel
+4_estimate_ctmc_rates.py  --  Continuous-time hazard rates from PNADC's quarterly panel
 =====================================================================================
 Python port of estimate_ctmc_rates.R (see HANDOFF_ctmc_rate_fix.md).
 
@@ -22,8 +22,8 @@ Time unit = ONE QUARTER throughout (Delta = 1). Data are quarterly.
 
 Usage
 -----
-    python estimate_ctmc_rates.py                       # Routes A, B, C + comparison
-    python estimate_ctmc_rates.py --tenure              # also Route D (grouped exponential)
+    python 4_estimate_ctmc_rates.py                       # Routes A, B, C + comparison
+    python 4_estimate_ctmc_rates.py --tenure              # also Route D (grouped exponential)
 """
 
 import argparse
