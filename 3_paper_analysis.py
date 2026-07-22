@@ -4,8 +4,9 @@
 Single script that regenerates EVERY figure and table used in the paper
 (20260428_LaborPaper.tex) and the presentation (20260428_Labor_Presentation.tex).
 
-It replaces the scattered pipeline (old scripts 4-10 + pnadc_superpc/analysis.py)
-with one file. The paper-relevant outputs, and where they used to come from, are:
+It consolidates the DESCRIPTIVE paper outputs (transition figures, wage figures,
+and the wage summary table) into one file. The GMM estimation stays in 9_GMM.py.
+The outputs it makes, and where they used to come from, are:
 
     figure_1_transition_probabilities.pdf     (Panel A, detailed 7-state)   <- pnadc_superpc/analysis.py
     figure_1_transition_probabilities_2.pdf   (Panel B, collapsed U/Priv/Pub)<- pnadc_superpc/analysis.py
@@ -13,7 +14,9 @@ with one file. The paper-relevant outputs, and where they used to come from, are
     figure_3_renda_USD.pdf                     (wage distributions, USD)      <- 6_analysis.do
     table_1_renda_USD.tex                      (wage summary stats, USD)      <- was a MANUAL .tex; now generated,
                                                                                 and FIXED to add U->Public / U->Private
-    table_V10E.tex                             (reservation wages & a/beta)   <- 9_GMM.py
+
+The structural estimation table (reservation wages R_R, R_P and a/beta) is
+produced separately by 9_GMM.py, which owns the GMM and its bootstrap.
 
 Data source
 -----------
@@ -31,17 +34,15 @@ Usage
 -----
     python 3_paper_analysis.py --sample full         # full 2023-2024 sample
     python 3_paper_analysis.py --sample higher-ed    # VD3004 == 7, restricted to 2023-2024
-    python 3_paper_analysis.py --no-gmm              # skip the (slow) bootstrap GMM table
-    python 3_paper_analysis.py --bootstrap 500 --alphas 0.03 0.06 --lambda0s 0.50 0.80
+    python 3_paper_analysis.py --unweighted-table1   # table_1 without survey weights
 
 NOTE (author): this consolidation was written without being run against the full
 data (the .dta files are too large for the machine it was drafted on). Please run
 it once and eyeball the figures/tables against the previous versions before
-deleting the superseded reference scripts (6_analysis.do, 9_GMM.py).
+deleting the superseded reference script (6_analysis.do).
 """
 
 import argparse
-from itertools import product
 from pathlib import Path
 
 import numpy as np
@@ -50,7 +51,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy.stats import norm, gaussian_kde
+from scipy.stats import gaussian_kde
 
 from harmonized_data import add_sample_argument, load_harmonized
 
@@ -66,7 +67,6 @@ T_DIR.mkdir(parents=True, exist_ok=True)
 
 YEARS = [2023, 2024]
 USD_RATE = 5.0            # BRL per USD (matches 6_analysis.do: renda_USD = renda / 5)
-MIN_WAGE = 1302.0         # 2023 statutory monthly minimum wage (BRL), GMM trimming anchor
 
 # Columns pulled from each .dta (keep small for memory)
 COLS = [
@@ -391,157 +391,11 @@ def make_table_1(df, weighted=True):
 
 
 # ---------------------------------------------------------------------------
-# table_V10E -- reservation wages & a/beta (GMM). Ported from 9_GMM.py.
-# ---------------------------------------------------------------------------
-def _upper_tail_imr(z):
-    return float(np.exp(norm.logpdf(z) - norm.logsf(z)))
-
-
-def _recover_sector(mean_log_acc, var_log_acc, p_accept, name):
-    if not (0 < p_accept < 1):
-        raise ValueError(f"{name}: p_accept={p_accept:.4f} outside (0,1).")
-    z = float(norm.isf(p_accept))
-    imr = _upper_tail_imr(z)
-    denom = 1.0 + z * imr - imr ** 2
-    if denom <= 1e-10:
-        raise ValueError(f"{name}: implied variance factor non-positive.")
-    sigma = float(np.sqrt(var_log_acc / denom))
-    mu = float(mean_log_acc - sigma * imr)
-    return float(np.exp(mu + sigma * z))               # reservation wage R
-
-
-def _extract_moments(df, min_wage):
-    """Deltas from full sample; accepted U->s wages trimmed at the minimum wage."""
-    st = df["st_col"]
-    # separation rates: origin employed -> next-quarter unemployed (full sample)
-    nxt = df["st_col_next"]
-    emp_pub = st.eq("Public sector") & nxt.notna()
-    emp_priv = st.eq("Private sector") & nxt.notna()
-    delta_P = float((nxt[emp_pub] == "Unemployed").mean())
-    delta_R = float((nxt[emp_priv] == "Unemployed").mean())
-
-    unemp = st.eq("Unemployed") & nxt.notna()
-    n_unemp = int(unemp.sum())
-    w1 = df["renda_next"]
-    up = w1[unemp & nxt.eq("Public sector")].dropna()
-    ur = w1[unemp & nxt.eq("Private sector")].dropna()
-    up = up[up >= min_wage].to_numpy()
-    ur = ur[ur >= min_wage].to_numpy()
-    if len(up) < 10 or len(ur) < 10:
-        raise ValueError(f"Too few accepted wages: n_UP={len(up)}, n_UR={len(ur)}")
-    return {
-        "delta_P": delta_P, "delta_R": delta_R,
-        "m_UP": len(up) / n_unemp, "m_UR": len(ur) / n_unemp,
-        "n_UP": len(up), "n_UR": len(ur),
-        "mean_log_UP": float(np.log(up).mean()), "var_log_UP": float(np.log(up).var()),
-        "mean_log_UR": float(np.log(ur).mean()), "var_log_UR": float(np.log(ur).var()),
-    }
-
-
-def _estimate_one(m, alpha, lambda0):
-    p_P = m["m_UP"] / (lambda0 * alpha)
-    p_R = m["m_UR"] / (lambda0 * (1 - alpha))
-    R_P = _recover_sector(m["mean_log_UP"], m["var_log_UP"], p_P, "Public")
-    R_R = _recover_sector(m["mean_log_UR"], m["var_log_UR"], p_R, "Private")
-    return {"R_P": R_P, "R_R": R_R, "a_over_beta": R_R - R_P,
-            "p_P": p_P, "p_R": p_R}
-
-
-def make_table_V10E(df, alphas, lambda0s, bootstrap, min_wage, seed=42):
-    # helper next-quarter columns for the moment extractor
-    df = df.copy()
-    g = df.groupby("id_pessoa")
-    consec = (g["time"].shift(-1) - df["time"]).eq(1)
-    df["st_col_next"] = g["st_col"].shift(-1).where(consec)
-    df["renda_next"] = g["renda"].shift(-1).where(consec)
-
-    combos = list(product(alphas, lambda0s))
-    m = _extract_moments(df, min_wage)
-    point = {c: _safe(lambda: _estimate_one(m, *c)) for c in combos}
-
-    # cluster bootstrap by individual
-    ci = {c: {} for c in combos}
-    if bootstrap > 0:
-        rng = np.random.default_rng(seed)
-        ids = df["id_pessoa"].unique()
-        idx = df.groupby("id_pessoa").indices
-        draws = {c: {k: [] for k in ("R_P", "R_R", "a_over_beta")} for c in combos}
-        for b in range(bootstrap):
-            take = rng.choice(ids, size=len(ids), replace=True)
-            rows = np.concatenate([idx[i] for i in take])
-            bdf = df.iloc[rows]
-            try:
-                mb = _extract_moments(bdf, min_wage)
-            except ValueError:
-                continue
-            for c in combos:
-                est = _safe(lambda: _estimate_one(mb, *c))
-                if est:
-                    for k in draws[c]:
-                        draws[c][k].append(est[k])
-            if (b + 1) % 50 == 0:
-                print(f"    bootstrap {b + 1}/{bootstrap}")
-        for c in combos:
-            for k in ("R_P", "R_R", "a_over_beta"):
-                arr = np.array(draws[c][k], float)
-                ci[c][k] = np.quantile(arr, [0.025, 0.975]) if arr.size else (np.nan, np.nan)
-
-    out = _build_v10e_latex(combos, point, ci, m, bootstrap)
-    p = T_DIR / "table_V10E.tex"
-    p.write_text(out, encoding="utf-8")
-    print(f"  [TABLE] {p.name}")
-
-
-def _safe(fn):
-    try:
-        return fn()
-    except Exception as exc:                            # noqa: BLE001
-        print(f"    (estimate failed: {exc})")
-        return None
-
-
-def _build_v10e_latex(combos, point, ci, m, bootstrap):
-    def cell(c, k):
-        est = point[c]
-        if not est:
-            return "--"
-        s = f"{est[k]:,.1f}"
-        if bootstrap > 0 and k in ci[c]:
-            lo, hi = ci[c][k]
-            if np.isfinite(lo):
-                s = r"\makecell[c]{" + s + r" \\ [" + f"{lo:,.1f}, {hi:,.1f}" + "]}"
-        return s
-
-    hdr = [rf"$\alpha={a:.2f},\ \lambda_0={l:.2f}$" for a, l in combos]
-    L = [r"\begin{tabular}{l" + "c" * len(combos) + "}", r"\toprule",
-         " & " + " & ".join(hdr) + r" \\", r"\midrule",
-         r"$R_R$ & " + " & ".join(cell(c, "R_R") for c in combos) + r" \\",
-         r"$R_P$ & " + " & ".join(cell(c, "R_P") for c in combos) + r" \\",
-         r"$a/\beta$ & " + " & ".join(cell(c, "a_over_beta") for c in combos) + r" \\",
-         r"\midrule",
-         r"$\alpha$ & " + " & ".join(f"{a:.2f}" for a, _ in combos) + r" \\",
-         r"$\lambda_0$ & " + " & ".join(f"{l:.2f}" for _, l in combos) + r" \\",
-         r"$\delta_P$ & " + " & ".join(f"{m['delta_P']:.4f}" for _ in combos) + r" \\",
-         r"$\delta_R$ & " + " & ".join(f"{m['delta_R']:.4f}" for _ in combos) + r" \\",
-         r"$m_{UP}$ & " + " & ".join(f"{m['m_UP']:.4f}" for _ in combos) + r" \\",
-         r"$m_{UR}$ & " + " & ".join(f"{m['m_UR']:.4f}" for _ in combos) + r" \\",
-         r"$n_{UP}$ & " + " & ".join(f"{m['n_UP']:,}" for _ in combos) + r" \\",
-         r"$n_{UR}$ & " + " & ".join(f"{m['n_UR']:,}" for _ in combos) + r" \\",
-         r"\bottomrule", r"\end{tabular}"]
-    return "\n".join(L)
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--alphas", type=float, nargs="+", default=[0.03, 0.06])
-    ap.add_argument("--lambda0s", type=float, nargs="+", default=[0.50, 0.80])
-    ap.add_argument("--bootstrap", type=int, default=500)
-    ap.add_argument("--min-wage", type=float, default=MIN_WAGE)
-    ap.add_argument("--no-gmm", action="store_true", help="Skip the GMM table.")
     ap.add_argument("--unweighted-table1", action="store_true")
     add_sample_argument(ap)
     args = ap.parse_args()
@@ -562,11 +416,6 @@ def main():
 
     print("\n== table_1 (wage summary stats, USD) ==")
     make_table_1(wdf, weighted=not args.unweighted_table1)
-
-    if not args.no_gmm:
-        print("\n== table_V10E (reservation wages & a/beta) ==")
-        make_table_V10E(wdf, args.alphas, args.lambda0s,
-                        args.bootstrap, args.min_wage)
 
     print("\nDone.")
     print(f"  Figures -> {F_DIR}")
