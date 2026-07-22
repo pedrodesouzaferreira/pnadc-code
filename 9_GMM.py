@@ -35,12 +35,12 @@ from harmonized_data import add_sample_argument, load_harmonized
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CLEANED_DIR = BASE_DIR / "Cleaned Data"
-DEFAULT_MIN_WAGE = 1302.0
+DEFAULT_MIN_WAGE = 0.0   # no wage trimming: the formal + full-time sample filter replaces it
 YEARS = (2023, 2024)
 HOURS_MIN = 30
 RAW_COLUMNS = [
     "id_pessoa", "ano", "trimestre", "renda_habitual_principal",
-    "horas_habituais_principal", "empregado_setor_pub",
+    "horas_habituais_principal", "formal", "empregado_setor_pub",
     "empregado_setor_priv", "desocupado", "conta_propria", "empregador",
     "trab_domestico", "trab_familiar_aux",
 ]
@@ -109,14 +109,27 @@ def load_harmonized_panel(sample):
     for column in ["ano", "trimestre", "renda_habitual_principal", "horas_habituais_principal"]:
         df[column] = pd.to_numeric(df[column], errors="coerce")
 
-    public = _indicator(df, "empregado_setor_pub")
+    # Sample filter (replaces the minimum-wage cutoff). A person-quarter counts as
+    #   EMPLOYED only if formal (formal == 1) AND full-time (usual hours >= HOURS_MIN);
+    #   UNEMPLOYED iff desocupado == 1 (i.e. condicao_ocupacao == 2).
+    # Informal, part-time, self-employed and out-of-labor-force rows get sector_t = None
+    # and are dropped from the transition pairs below.  (Note: 'formal' = VD4009 in
+    # {1,3,5,8}, so statutory servants/military (code 5) and public-with-carteira (3)
+    # are retained; only public-without-carteira (code 4) is treated as informal.)
+    if "formal" not in df.columns:
+        raise ValueError(
+            "Column 'formal' is missing from the harmonized data; re-run "
+            "2_harmonize.py so 1_clean's 'formal' flag is carried through."
+        )
+    formal_ft = _indicator(df, "formal") & (df["horas_habituais_principal"] >= HOURS_MIN)
+    public = _indicator(df, "empregado_setor_pub") & formal_ft
     private = (
         _indicator(df, "empregado_setor_priv")
         | _indicator(df, "conta_propria")
         | _indicator(df, "empregador")
         | _indicator(df, "trab_domestico")
-    )
-    unemployed = _indicator(df, "desocupado") | _indicator(df, "trab_familiar_aux")
+    ) & formal_ft
+    unemployed = _indicator(df, "desocupado")            # condicao_ocupacao == 2
     df["sector_t"] = np.select(
         [public, private, unemployed],
         ["public", "private", "unemployed"],
@@ -125,9 +138,6 @@ def load_harmonized_panel(sample):
     df["wage_t"] = df["renda_habitual_principal"].where(
         df["renda_habitual_principal"] > 0
     )
-    employed = df["sector_t"].isin(["public", "private"])
-    not_full_time = employed & ~(df["horas_habituais_principal"] >= HOURS_MIN)
-    df.loc[not_full_time, ["sector_t", "wage_t"]] = None
 
     base_year = int(df["ano"].min())
     df["time"] = (df["ano"] - base_year) * 4 + df["trimestre"]
@@ -466,7 +476,7 @@ def build_latex_table(point_df, ci_df, combos, caption, label):
     lines.append(r"\end{tabular}")
     lines.append(r"\vspace{0.25em}")
     lines.append(r"\begin{minipage}{0.95\linewidth}")
-    lines.append(r"\footnotesize Notes: All estimates use a trimming cutoff equal to 100\% of the statutory minimum wage. Cells for $R_R$, $R_P$, and $a/\beta$ report point estimates with bootstrap percentile 95\% confidence intervals in brackets. Confidence intervals are obtained by cluster bootstrap at the individual level.")
+    lines.append(r"\footnotesize Notes: The estimation sample keeps formal, full-time employees (formal $=1$ and usual weekly hours $\geq 30$) and the unemployed (condi\c{c}\~ao de ocupa\c{c}\~ao $=2$); informal, part-time, self-employed and out-of-labour-force person-quarters are excluded. Cells for $R_R$, $R_P$, and $a/\beta$ report point estimates; bracketed bootstrap percentile 95\% confidence intervals are shown when the bootstrap is run (cluster bootstrap at the individual level).")
     lines.append(r"\end{minipage}")
     lines.append(r"\end{table}")
     return "\n".join(lines)
@@ -503,7 +513,7 @@ def main():
     point_df = run_point_grid(m, combos)
 
     print()
-    print("=== Point estimates at 100% minimum-wage cutoff ===")
+    print("=== Point estimates (formal, full-time sample) ===")
     with pd.option_context("display.max_columns", None, "display.width", 250, "display.float_format", lambda x: f"{x:,.4f}"):
         print(point_df.to_string(index=False))
 
