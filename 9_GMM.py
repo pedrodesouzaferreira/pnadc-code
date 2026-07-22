@@ -35,7 +35,11 @@ from harmonized_data import add_sample_argument, load_harmonized
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CLEANED_DIR = BASE_DIR / "Cleaned Data"
-DEFAULT_MIN_WAGE = 0.0   # no wage trimming: the formal + full-time sample filter replaces it
+DEFAULT_MIN_WAGE = 1302.0   # statutory monthly minimum wage (BRL); floor on accepted-wage
+#                             moments. formal+full-time defines the SAMPLE; this floor cleans
+#                             the WAGE MOMENTS (drops the sub-minimum private tail that would
+#                             otherwise push R_R below R_P and make a/beta negative).
+STATUTORY_MIN_WAGE = 1302.0  # used by diagnostics regardless of --min-wage
 YEARS = (2023, 2024)
 HOURS_MIN = 30
 RAW_COLUMNS = [
@@ -103,7 +107,56 @@ def _indicator(df, column):
     return pd.to_numeric(df[column], errors="coerce").fillna(0).eq(1)
 
 
-def load_harmonized_panel(sample):
+def _print_sample_diagnostics(df, statutory_min=STATUTORY_MIN_WAGE):
+    """Funnel of who is kept, employment tabulations, transition counts, and the
+    sub-minimum-wage share of accepted wages. Uses the frame BEFORE it is reduced
+    to valid transition pairs (so `sector_t` still contains dropped rows as None)."""
+    print("\n----- SAMPLE DIAGNOSTICS -----")
+    print(f"person-quarter rows loaded (2023-2024): {len(df):,}")
+
+    pos_emp = (
+        _indicator(df, "empregado_setor_pub")
+        | _indicator(df, "empregado_setor_priv")
+        | _indicator(df, "conta_propria")
+        | _indicator(df, "empregador")
+        | _indicator(df, "trab_domestico")
+    )
+    formal = _indicator(df, "formal")
+    ft = df["horas_habituais_principal"] >= HOURS_MIN
+    print(f"  employed (any position):          {int(pos_emp.sum()):,}")
+    print(f"    formal (formal==1):             {int((pos_emp & formal).sum()):,}")
+    print(f"    full-time (hrs>={HOURS_MIN}):           {int((pos_emp & ft).sum()):,}")
+    print(f"    formal AND full-time (kept):    {int((pos_emp & formal & ft).sum()):,}")
+    print(f"  unemployed (desocupado==1):       {int(_indicator(df, 'desocupado').sum()):,}")
+
+    print("\n  state assignment (sector_t), including dropped rows (None):")
+    for k, v in df["sector_t"].value_counts(dropna=False).items():
+        print(f"    {str(k):<12}: {v:,}")
+
+    if "valid_transition_pair" in df.columns:
+        vp = df[df["valid_transition_pair"]]
+        print(f"\n  valid consecutive-quarter pairs:  {len(vp):,}")
+        order = ["unemployed", "public", "private"]
+        ct = (vp.groupby(["sector_t", "sector_t1"]).size().unstack(fill_value=0)
+                .reindex(index=order, columns=order, fill_value=0))
+        print("  transition COUNTS (origin rows -> dest cols):")
+        print("    " + ct.to_string().replace("\n", "\n    "))
+
+        unemp = vp[vp["sector_t"] == "unemployed"]
+        for dest, lab in [("public", "U->P (public)"), ("private", "U->R (private)")]:
+            w = pd.to_numeric(unemp.loc[unemp["sector_t1"] == dest, "wage_t1"], errors="coerce")
+            w = w[w > 0]
+            below = int((w < statutory_min).sum())
+            pct = 100 * below / max(len(w), 1)
+            print(f"\n  accepted {lab}: N(wage>0)={len(w):,}; "
+                  f"below statutory min ({statutory_min:.0f}) = {below:,} ({pct:.1f}%)")
+            if len(w):
+                q = w.quantile([0, .01, .05, .10, .25, .50]).round(0).astype(int).tolist()
+                print(f"    min/p1/p5/p10/p25/p50 = {q}")
+    print("----- END DIAGNOSTICS -----\n")
+
+
+def load_harmonized_panel(sample, diagnose=True):
     """Construct the consecutive-quarter GMM panel from harmonized data."""
     df = load_harmonized(CLEANED_DIR, sample, columns=RAW_COLUMNS, years=YEARS)
     for column in ["ano", "trimestre", "renda_habitual_principal", "horas_habituais_principal"]:
@@ -147,6 +200,8 @@ def load_harmonized_panel(sample):
     df["sector_t1"] = df.groupby("id_pessoa")["sector_t"].shift(-1).where(consecutive)
     df["wage_t1"] = df.groupby("id_pessoa")["wage_t"].shift(-1).where(consecutive)
     df["valid_transition_pair"] = consecutive & df["sector_t1"].notna()
+    if diagnose:
+        _print_sample_diagnostics(df)
     df = df[df["valid_transition_pair"]].copy()
     print(f"Prepared {len(df):,} valid consecutive-quarter transition pairs")
     return df
@@ -476,7 +531,7 @@ def build_latex_table(point_df, ci_df, combos, caption, label):
     lines.append(r"\end{tabular}")
     lines.append(r"\vspace{0.25em}")
     lines.append(r"\begin{minipage}{0.95\linewidth}")
-    lines.append(r"\footnotesize Notes: The estimation sample keeps formal, full-time employees (formal $=1$ and usual weekly hours $\geq 30$) and the unemployed (condi\c{c}\~ao de ocupa\c{c}\~ao $=2$); informal, part-time, self-employed and out-of-labour-force person-quarters are excluded. Cells for $R_R$, $R_P$, and $a/\beta$ report point estimates; bracketed bootstrap percentile 95\% confidence intervals are shown when the bootstrap is run (cluster bootstrap at the individual level).")
+    lines.append(r"\footnotesize Notes: The estimation sample keeps formal, full-time employees (formal $=1$ and usual weekly hours $\geq 30$) and the unemployed (condi\c{c}\~ao de ocupa\c{c}\~ao $=2$); informal, part-time, self-employed and out-of-labour-force person-quarters are excluded, and accepted-wage moments are trimmed below the statutory minimum wage. Cells for $R_R$, $R_P$, and $a/\beta$ report point estimates; bracketed bootstrap percentile 95\% confidence intervals are shown when the bootstrap is run (cluster bootstrap at the individual level).")
     lines.append(r"\end{minipage}")
     lines.append(r"\end{table}")
     return "\n".join(lines)
@@ -490,6 +545,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", type=Path, default=None, help="Optional prepared panel; overrides --sample.")
     add_sample_argument(parser)
+    parser.add_argument("--no-diagnose", dest="diagnose", action="store_false",
+                        default=True, help="Suppress the sample-funnel diagnostics.")
     parser.add_argument("--alphas", type=float, nargs="+", required=True, help="List of calibrated alpha values.")
     parser.add_argument("--lambda0s", type=float, nargs="+", required=True, help="List of calibrated lambda_0 values.")
     parser.add_argument("--min-wage", type=float, default=DEFAULT_MIN_WAGE, help=f"Minimum wage anchor and trimming cutoff (default: {DEFAULT_MIN_WAGE:.0f}).")
@@ -506,7 +563,7 @@ def main():
 
     combos = [(a, l) for a, l in product(args.alphas, args.lambda0s)]
 
-    df = load_prepared_panel(args.input) if args.input is not None else load_harmonized_panel(args.sample)
+    df = load_prepared_panel(args.input) if args.input is not None else load_harmonized_panel(args.sample, diagnose=args.diagnose)
     raw = extract_raw_objects(df)
     m = build_trimmed_moments(raw, cut_public=args.min_wage, cut_private=args.min_wage)
 
