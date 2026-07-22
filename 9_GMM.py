@@ -42,8 +42,11 @@ DEFAULT_MIN_WAGE = 1302.0   # statutory monthly minimum wage (BRL); floor on acc
 STATUTORY_MIN_WAGE = 1302.0  # used by diagnostics regardless of --min-wage
 YEARS = (2023, 2024)
 HOURS_MIN = 30
+REAL_WAGE_COLUMN = "renda_habitual_principal_real_2025q3"  # deflated to 2025q3 by 2_harmonize.py
+MIN_WAGE_BY_YEAR = {2023: 1302.0, 2024: 1412.0}            # nominal statutory monthly minimum (BRL)
 RAW_COLUMNS = [
-    "id_pessoa", "ano", "trimestre", "renda_habitual_principal",
+    "id_pessoa", "ano", "trimestre",
+    "renda_habitual_principal", REAL_WAGE_COLUMN,
     "horas_habituais_principal", "formal", "empregado_setor_pub",
     "empregado_setor_priv", "desocupado", "conta_propria", "empregador",
     "trab_domestico", "trab_familiar_aux",
@@ -148,24 +151,30 @@ def _print_sample_diagnostics(df, statutory_min=STATUTORY_MIN_WAGE):
         print("    " + ct.to_string().replace("\n", "\n    "))
 
         unemp = vp[vp["sector_t"] == "unemployed"]
+        has_nom = "wage_nom_t1" in vp.columns
         for dest, lab in [("public", "U->P (public)"), ("private", "U->R (private)")]:
-            w = pd.to_numeric(unemp.loc[unemp["sector_t1"] == dest, "wage_t1"], errors="coerce")
-            w = w[w > 0]
-            below = int((w < statutory_min).sum())
-            pct = 100 * below / max(len(w), 1)
-            print(f"\n  accepted {lab}: N(wage>0)={len(w):,}; "
-                  f"below statutory min ({statutory_min:.0f}) = {below:,} ({pct:.1f}%)")
-            if len(w):
-                q = w.quantile([0, .01, .05, .10, .25, .50]).round(0).astype(int).tolist()
-                print(f"    min/p1/p5/p10/p25/p50 = {q}")
+            sub_d = unemp[unemp["sector_t1"] == dest]
+            nom = pd.to_numeric(sub_d["wage_nom_t1" if has_nom else "wage_t1"], errors="coerce")
+            nom = nom[nom > 0]
+            real_kept = pd.to_numeric(sub_d["wage_t1"], errors="coerce").dropna()
+            dropped = len(nom) - len(real_kept)
+            pct = 100 * dropped / max(len(nom), 1)
+            print(f"\n  accepted {lab}: transitions with a wage={len(nom):,}; "
+                  f"dropped by min-wage floor={dropped:,} ({pct:.1f}%); "
+                  f"kept for moments={len(real_kept):,}")
+            if len(real_kept):
+                q = real_kept.quantile([0, .01, .05, .10, .25, .50]).round(0).astype(int).tolist()
+                print(f"    real (2025q3) min/p1/p5/p10/p25/p50 = {q}")
     print("----- END DIAGNOSTICS -----\n")
 
 
-def load_harmonized_panel(sample, diagnose=True):
+def load_harmonized_panel(sample, diagnose=True, min_wage_override=None):
     """Construct the consecutive-quarter GMM panel from harmonized data."""
     df = load_harmonized(CLEANED_DIR, sample, columns=RAW_COLUMNS, years=YEARS)
-    for column in ["ano", "trimestre", "renda_habitual_principal", "horas_habituais_principal"]:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
+    for column in ["ano", "trimestre", "renda_habitual_principal",
+                   "horas_habituais_principal", REAL_WAGE_COLUMN]:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
 
     # Sample filter (replaces the minimum-wage cutoff). A person-quarter counts as
     #   EMPLOYED only if formal (formal == 1) AND full-time (usual hours >= HOURS_MIN);
@@ -193,9 +202,27 @@ def load_harmonized_panel(sample, diagnose=True):
         ["public", "private", "unemployed"],
         default=None,
     )
-    df["wage_t"] = df["renda_habitual_principal"].where(
-        df["renda_habitual_principal"] > 0
-    )
+    # Wages: use the deflated (real, 2025q3) column for the moments if available.
+    nominal = df["renda_habitual_principal"]
+    if REAL_WAGE_COLUMN in df.columns:
+        real, using_real = df[REAL_WAGE_COLUMN], True
+    else:
+        real, using_real = nominal, False
+        print(f"  WARNING: {REAL_WAGE_COLUMN!r} not in data; using NOMINAL wages.")
+    # Minimum-wage floor on the NOMINAL wage vs each year's statutory minimum
+    # (equivalent to a real floor, since both scale by the same per-quarter deflator).
+    if min_wage_override is not None and min_wage_override >= 0:
+        row_min = pd.Series(float(min_wage_override), index=df.index)
+        floor_desc = f"flat {min_wage_override:.0f} (nominal, all years)"
+    else:
+        row_min = df["ano"].map(MIN_WAGE_BY_YEAR).fillna(max(MIN_WAGE_BY_YEAR.values()))
+        floor_desc = "year-specific statutory min (" + \
+            ", ".join(f"{y}:{int(v)}" for y, v in sorted(MIN_WAGE_BY_YEAR.items())) + ")"
+    keep_wage = (nominal >= row_min) & (real > 0)
+    df["wage_t"] = real.where(keep_wage)           # REAL wage, floored -> used for moments
+    df["wage_nom_t"] = nominal.where(nominal > 0)  # nominal, kept for diagnostics only
+    print(f"  wages: {'REAL (2025q3)' if using_real else 'NOMINAL (fallback)'}; "
+          f"min-wage floor = {floor_desc}")
 
     base_year = int(df["ano"].min())
     df["time"] = (df["ano"] - base_year) * 4 + df["trimestre"]
@@ -204,6 +231,7 @@ def load_harmonized_panel(sample, diagnose=True):
     consecutive = next_time.sub(df["time"]).eq(1)
     df["sector_t1"] = df.groupby("id_pessoa")["sector_t"].shift(-1).where(consecutive)
     df["wage_t1"] = df.groupby("id_pessoa")["wage_t"].shift(-1).where(consecutive)
+    df["wage_nom_t1"] = df.groupby("id_pessoa")["wage_nom_t"].shift(-1).where(consecutive)
     df["valid_transition_pair"] = consecutive & df["sector_t1"].notna()
     if diagnose:
         _print_sample_diagnostics(df)
@@ -536,7 +564,7 @@ def build_latex_table(point_df, ci_df, combos, caption, label):
     lines.append(r"\end{tabular}")
     lines.append(r"\vspace{0.25em}")
     lines.append(r"\begin{minipage}{0.95\linewidth}")
-    lines.append(r"\footnotesize Notes: The estimation sample keeps formal, full-time employees (formal $=1$ and usual weekly hours $\geq 30$) and the unemployed (condi\c{c}\~ao de ocupa\c{c}\~ao $=2$); informal, part-time, self-employed and out-of-labour-force person-quarters are excluded, and accepted-wage moments are trimmed below the statutory minimum wage. Cells for $R_R$, $R_P$, and $a/\beta$ report point estimates; bracketed bootstrap percentile 95\% confidence intervals are shown when the bootstrap is run (cluster bootstrap at the individual level).")
+    lines.append(r"\footnotesize Notes: The estimation sample keeps formal, full-time employees (formal $=1$ and usual weekly hours $\geq 30$) and the unemployed (condi\c{c}\~ao de ocupa\c{c}\~ao $=2$); informal, part-time, self-employed and out-of-labour-force person-quarters are excluded; wages are deflated to 2025q3 reais and accepted-wage moments drop observations below each year\'s statutory minimum wage (2023: R\$1{,}302; 2024: R\$1{,}412). Cells for $R_R$, $R_P$, and $a/\beta$ report point estimates; bracketed bootstrap percentile 95\% confidence intervals are shown when the bootstrap is run (cluster bootstrap at the individual level).")
     lines.append(r"\end{minipage}")
     lines.append(r"\end{table}")
     return "\n".join(lines)
@@ -554,7 +582,9 @@ def main():
                         default=True, help="Suppress the sample-funnel diagnostics.")
     parser.add_argument("--alphas", type=float, nargs="+", required=True, help="List of calibrated alpha values.")
     parser.add_argument("--lambda0s", type=float, nargs="+", required=True, help="List of calibrated lambda_0 values.")
-    parser.add_argument("--min-wage", type=float, default=DEFAULT_MIN_WAGE, help=f"Minimum wage anchor and trimming cutoff (default: {DEFAULT_MIN_WAGE:.0f}).")
+    parser.add_argument("--min-wage", type=float, default=-1.0,
+                        help="Flat NOMINAL min-wage floor for all years; default (-1) uses "
+                             "year-specific statutory minimums (2023:1302, 2024:1412).")
     parser.add_argument("--bootstrap", type=int, default=300, help="Number of cluster-bootstrap repetitions.")
     parser.add_argument("--boot-seed", type=int, default=42, help="Random seed for bootstrap.")
     parser.add_argument("--boot-progress-every", type=int, default=25, help="Print bootstrap progress every N replications.")
@@ -568,9 +598,9 @@ def main():
 
     combos = [(a, l) for a, l in product(args.alphas, args.lambda0s)]
 
-    df = load_prepared_panel(args.input) if args.input is not None else load_harmonized_panel(args.sample, diagnose=args.diagnose)
+    df = load_prepared_panel(args.input) if args.input is not None else load_harmonized_panel(args.sample, diagnose=args.diagnose, min_wage_override=args.min_wage)
     raw = extract_raw_objects(df)
-    m = build_trimmed_moments(raw, cut_public=args.min_wage, cut_private=args.min_wage)
+    m = build_trimmed_moments(raw, cut_public=0.0, cut_private=0.0)  # floor applied upstream (per-year, real)
 
     point_df = run_point_grid(m, combos)
 
