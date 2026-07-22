@@ -112,7 +112,12 @@ def _print_sample_diagnostics(df, statutory_min=STATUTORY_MIN_WAGE):
     sub-minimum-wage share of accepted wages. Uses the frame BEFORE it is reduced
     to valid transition pairs (so `sector_t` still contains dropped rows as None)."""
     print("\n----- SAMPLE DIAGNOSTICS -----")
-    print(f"person-quarter rows loaded (2023-2024): {len(df):,}")
+    _yrs = sorted(pd.to_numeric(df["ano"], errors="coerce").dropna().astype(int).unique().tolist())
+    _yr_lbl = f"{_yrs[0]}-{_yrs[-1]}" if _yrs else "n/a"
+    print(f"person-quarter rows loaded: {len(df):,}  "
+          f"(years actually present: {_yr_lbl}; {len(_yrs)} year(s))")
+    _by_year = pd.to_numeric(df["ano"], errors="coerce").value_counts().sort_index()
+    print("  rows by year: " + ", ".join(f"{int(y)}:{int(c):,}" for y, c in _by_year.items()))
 
     pos_emp = (
         _indicator(df, "empregado_setor_pub")
