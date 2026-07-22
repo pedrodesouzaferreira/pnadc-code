@@ -512,36 +512,38 @@ def main():
         print()
         print(f"Saved point estimates to: {args.save_point_csv}")
 
-    if args.bootstrap <= 0:
-        raise ValueError("--bootstrap must be positive in v10E because the LaTeX table includes confidence intervals.")
-
-    print()
-    print(f"=== Running cluster bootstrap (B={args.bootstrap}) ===")
-    boot_df = bootstrap_grid(
-        df=df,
-        combos=combos,
-        min_wage=args.min_wage,
-        reps=args.bootstrap,
-        seed=args.boot_seed,
-        progress_every=args.boot_progress_every,
-    )
-
-    ci_df = summarize_bootstrap_ci(boot_df, combos, params=("R_P", "R_R", "a_over_beta"))
-
-    print()
-    print("=== Bootstrap percentile 95% confidence intervals ===")
-    with pd.option_context("display.max_columns", None, "display.width", 250, "display.float_format", lambda x: f"{x:,.4f}"):
-        print(ci_df.to_string(index=False))
-
-    if args.save_boot_csv is not None:
-        boot_df.to_csv(args.save_boot_csv, index=False)
+    if args.bootstrap > 0:
         print()
-        print(f"Saved bootstrap draws to: {args.save_boot_csv}")
+        print(f"=== Running cluster bootstrap (B={args.bootstrap}) ===")
+        boot_df = bootstrap_grid(
+            df=df,
+            combos=combos,
+            min_wage=args.min_wage,
+            reps=args.bootstrap,
+            seed=args.boot_seed,
+            progress_every=args.boot_progress_every,
+        )
 
-    if args.save_ci_csv is not None:
-        ci_df.to_csv(args.save_ci_csv, index=False)
+        ci_df = summarize_bootstrap_ci(boot_df, combos, params=("R_P", "R_R", "a_over_beta"))
+
         print()
-        print(f"Saved bootstrap CIs to: {args.save_ci_csv}")
+        print("=== Bootstrap percentile 95% confidence intervals ===")
+        with pd.option_context("display.max_columns", None, "display.width", 250, "display.float_format", lambda x: f"{x:,.4f}"):
+            print(ci_df.to_string(index=False))
+
+        if args.save_boot_csv is not None:
+            boot_df.to_csv(args.save_boot_csv, index=False)
+            print()
+            print(f"Saved bootstrap draws to: {args.save_boot_csv}")
+
+        if args.save_ci_csv is not None:
+            ci_df.to_csv(args.save_ci_csv, index=False)
+            print()
+            print(f"Saved bootstrap CIs to: {args.save_ci_csv}")
+    else:
+        print()
+        print("=== Skipping bootstrap (--bootstrap 0): point estimates only, no CIs ===")
+        ci_df = pd.DataFrame(columns=["alpha", "lambda_0"])
 
     latex_table = build_latex_table(
         point_df=point_df,
