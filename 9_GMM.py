@@ -47,12 +47,14 @@ MIN_WAGE_BY_YEAR = {                                       # nominal statutory m
     2016: 880.0, 2017: 937.0, 2018: 954.0, 2019: 998.0, 2020: 1045.0,
     2021: 1100.0, 2022: 1212.0, 2023: 1302.0, 2024: 1412.0, 2025: 1518.0,
 }
+CONTROL_COLUMNS = ["idade", "sexo", "raca_cor", "nivel_instrucao", "zona"]  # for --residualize
 RAW_COLUMNS = [
     "id_pessoa", "ano", "trimestre",
     "renda_habitual_principal", REAL_WAGE_COLUMN,
     "horas_habituais_principal", "formal", "empregado_setor_pub",
     "empregado_setor_priv", "desocupado", "conta_propria", "empregador",
     "trab_domestico", "trab_familiar_aux",
+    "idade", "sexo", "raca_cor", "nivel_instrucao", "zona",
 ]
 
 
@@ -240,6 +242,72 @@ def load_harmonized_panel(sample, diagnose=True, min_wage_override=None, years=Y
         _print_sample_diagnostics(df)
     df = df[df["valid_transition_pair"]].copy()
     print(f"Prepared {len(df):,} valid consecutive-quarter transition pairs")
+    return df
+
+
+# -----------------------------------------------------------------------------
+# Optional: composition-adjust accepted wages (--residualize)
+# -----------------------------------------------------------------------------
+
+def residualize_accepted_wages(df, control_columns=CONTROL_COLUMNS, verbose=True):
+    """Composition-adjust the accepted U->P / U->R wages before the moments are taken.
+
+    Regress log(accepted wage) on observable controls -- age, age^2, and dummies for
+    sex, race, education, region and year -- pooled across U->public and U->private
+    movers and WITHOUT a sector term, then replace each wage by its value at the
+    sample-average covariates (residual + mean fitted). This removes differences in
+    observables between the two mover groups (selection/composition) while preserving
+    the between-sector gap that a/beta is meant to capture. Only rows with complete
+    controls are adjusted; the rest keep their raw wage. (Note: the fit is done once on
+    the full sample, not re-estimated inside each bootstrap replication.)
+    """
+    wage = pd.to_numeric(df.get("wage_t1"), errors="coerce")
+    mask = (
+        (df["sector_t"] == "unemployed")
+        & df["sector_t1"].isin(["public", "private"])
+        & wage.gt(0)
+    )
+    sub_df = df.loc[mask]
+    present = [c for c in control_columns if c in df.columns]
+    if len(sub_df) < 30 or not present:
+        print("  residualize: too few rows or no control columns; skipping.")
+        return df
+
+    parts, names = [np.ones(len(sub_df))], ["const"]
+    if "idade" in present:
+        age = pd.to_numeric(sub_df["idade"], errors="coerce").to_numpy(dtype=float)
+        parts += [age, age ** 2]
+        names += ["age", "age2"]
+    cat_cols = [c for c in present if c != "idade"]
+    if "ano" in df.columns:
+        cat_cols += ["ano"]
+    if cat_cols:
+        dummies = pd.get_dummies(sub_df[cat_cols].astype("string"),
+                                 drop_first=True, dummy_na=False)
+        parts.append(dummies.to_numpy(dtype=float))
+        names += list(dummies.columns)
+    X = np.column_stack(parts)
+    y = np.log(wage.loc[sub_df.index].to_numpy(dtype=float))
+
+    complete = sub_df[present].notna().all(axis=1).to_numpy()
+    ok = np.isfinite(y) & np.isfinite(X).all(axis=1) & complete
+    if int(ok.sum()) < X.shape[1] + 10:
+        print("  residualize: too few complete-control rows; skipping.")
+        return df
+
+    beta, *_ = np.linalg.lstsq(X[ok], y[ok], rcond=None)
+    fitted = X[ok] @ beta
+    adjusted = y[ok] - fitted + fitted.mean()          # evaluate everyone at mean covariates
+    df.loc[sub_df.index[ok], "wage_t1"] = np.exp(adjusted)
+
+    if verbose:
+        resid = y[ok] - fitted
+        ss_tot = float(((y[ok] - y[ok].mean()) ** 2).sum())
+        r2 = 1.0 - float((resid ** 2).sum()) / ss_tot if ss_tot > 0 else float("nan")
+        ctrls = present + (["ano"] if "ano" in df.columns else [])
+        print(f"  residualized {int(ok.sum()):,} accepted U->sector wages on "
+              f"[{', '.join(ctrls)}] (age^2 + dummies; {X.shape[1]-1} regressors); "
+              f"log-wage R^2={r2:.3f}")
     return df
 
 
@@ -593,6 +661,10 @@ def main():
     parser.add_argument("--min-wage", type=float, default=-1.0,
                         help="Flat NOMINAL min-wage floor for all years; default (-1) uses "
                              "year-specific statutory minimums (2023:1302, 2024:1412).")
+    parser.add_argument("--residualize", action="store_true",
+                        help="Residualize accepted U->sector wages on observables "
+                             "(age, sex, race, education, region, year) before the moments, "
+                             "netting out composition/selection between public and private movers.")
     parser.add_argument("--bootstrap", type=int, default=300, help="Number of cluster-bootstrap repetitions.")
     parser.add_argument("--boot-seed", type=int, default=42, help="Random seed for bootstrap.")
     parser.add_argument("--boot-progress-every", type=int, default=25, help="Print bootstrap progress every N replications.")
@@ -610,6 +682,9 @@ def main():
     df = (load_prepared_panel(args.input) if args.input is not None
           else load_harmonized_panel(args.sample, diagnose=args.diagnose,
                                       min_wage_override=args.min_wage, years=years))
+    if args.residualize:
+        df = residualize_accepted_wages(df)
+        args.caption += " (accepted wages residualized on observables)"
     raw = extract_raw_objects(df)
     m = build_trimmed_moments(raw, cut_public=0.0, cut_private=0.0)  # floor applied upstream (per-year, real)
 
