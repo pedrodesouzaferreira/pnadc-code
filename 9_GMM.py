@@ -20,7 +20,7 @@ It then prints a LaTeX-formatted table with:
 Examples
 --------
 python 9_GMM.py --alphas 0.03 0.06 --lambda0s 0.50 0.80 --bootstrap 300
-python 9_GMM.py --alphas 0.03 0.06 --lambda0s 0.50 0.80 --bootstrap 500 --output-tex table_v10E.tex
+python 9_GMM.py --sample higher-ed --alphas 0.03 --lambda0s 0.50 --bootstrap 500
 """
 
 import argparse
@@ -31,10 +31,19 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
+from harmonized_data import add_sample_argument, load_harmonized
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT = BASE_DIR / "Cleaned Data" / "PNADC_prepared_for_GMM_v4.parquet"
+CLEANED_DIR = BASE_DIR / "Cleaned Data"
 DEFAULT_MIN_WAGE = 1302.0
+YEARS = (2023, 2024)
+HOURS_MIN = 30
+RAW_COLUMNS = [
+    "id_pessoa", "ano", "trimestre", "renda_habitual_principal",
+    "horas_habituais_principal", "empregado_setor_pub",
+    "empregado_setor_priv", "desocupado", "conta_propria", "empregador",
+    "trab_domestico", "trab_familiar_aux",
+]
 
 
 # -----------------------------------------------------------------------------
@@ -77,7 +86,7 @@ def latex_escape(text):
 # Data loading
 # -----------------------------------------------------------------------------
 
-def load_panel(path):
+def load_prepared_panel(path):
     df = pd.read_parquet(path)
     if "valid_transition_pair" in df.columns:
         df = df[df["valid_transition_pair"]].copy()
@@ -85,6 +94,51 @@ def load_panel(path):
         df = df[df["sector_t1"].notna()].copy()
     df["wage_t"] = pd.to_numeric(df["wage_t"], errors="coerce")
     df["wage_t1"] = pd.to_numeric(df["wage_t1"], errors="coerce")
+    return df
+
+
+def _indicator(df, column):
+    if column not in df:
+        return pd.Series(False, index=df.index)
+    return pd.to_numeric(df[column], errors="coerce").fillna(0).eq(1)
+
+
+def load_harmonized_panel(sample):
+    """Construct the consecutive-quarter GMM panel from harmonized data."""
+    df = load_harmonized(CLEANED_DIR, sample, columns=RAW_COLUMNS, years=YEARS)
+    for column in ["ano", "trimestre", "renda_habitual_principal", "horas_habituais_principal"]:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    public = _indicator(df, "empregado_setor_pub")
+    private = (
+        _indicator(df, "empregado_setor_priv")
+        | _indicator(df, "conta_propria")
+        | _indicator(df, "empregador")
+        | _indicator(df, "trab_domestico")
+    )
+    unemployed = _indicator(df, "desocupado") | _indicator(df, "trab_familiar_aux")
+    df["sector_t"] = np.select(
+        [public, private, unemployed],
+        ["public", "private", "unemployed"],
+        default=None,
+    )
+    df["wage_t"] = df["renda_habitual_principal"].where(
+        df["renda_habitual_principal"] > 0
+    )
+    employed = df["sector_t"].isin(["public", "private"])
+    not_full_time = employed & ~(df["horas_habituais_principal"] >= HOURS_MIN)
+    df.loc[not_full_time, ["sector_t", "wage_t"]] = None
+
+    base_year = int(df["ano"].min())
+    df["time"] = (df["ano"] - base_year) * 4 + df["trimestre"]
+    df = df.sort_values(["id_pessoa", "time"]).reset_index(drop=True)
+    next_time = df.groupby("id_pessoa")["time"].shift(-1)
+    consecutive = next_time.sub(df["time"]).eq(1)
+    df["sector_t1"] = df.groupby("id_pessoa")["sector_t"].shift(-1).where(consecutive)
+    df["wage_t1"] = df.groupby("id_pessoa")["wage_t"].shift(-1).where(consecutive)
+    df["valid_transition_pair"] = consecutive & df["sector_t1"].notna()
+    df = df[df["valid_transition_pair"]].copy()
+    print(f"Prepared {len(df):,} valid consecutive-quarter transition pairs")
     return df
 
 
@@ -424,7 +478,8 @@ def build_latex_table(point_df, ci_df, combos, caption, label):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="Panel parquet with sector_t, sector_t1, wage_t1.")
+    parser.add_argument("--input", type=Path, default=None, help="Optional prepared panel; overrides --sample.")
+    add_sample_argument(parser)
     parser.add_argument("--alphas", type=float, nargs="+", required=True, help="List of calibrated alpha values.")
     parser.add_argument("--lambda0s", type=float, nargs="+", required=True, help="List of calibrated lambda_0 values.")
     parser.add_argument("--min-wage", type=float, default=DEFAULT_MIN_WAGE, help=f"Minimum wage anchor and trimming cutoff (default: {DEFAULT_MIN_WAGE:.0f}).")
@@ -441,7 +496,7 @@ def main():
 
     combos = [(a, l) for a, l in product(args.alphas, args.lambda0s)]
 
-    df = load_panel(args.input)
+    df = load_prepared_panel(args.input) if args.input is not None else load_harmonized_panel(args.sample)
     raw = extract_raw_objects(df)
     m = build_trimmed_moments(raw, cut_public=args.min_wage, cut_private=args.min_wage)
 

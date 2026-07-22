@@ -2,6 +2,8 @@
 4_estimate_ctmc_rates.py  --  Continuous-time hazard rates from PNADC's quarterly panel
 =====================================================================================
 Python port of estimate_ctmc_rates.R (see HANDOFF_ctmc_rate_fix.md).
+Reads the selected harmonized Parquet dataset and restricts both sample choices
+to 2023-2024.
 
 WHY: the structural estimation plugs discrete-time quarterly transition FRACTIONS
 into a continuous-time model whose parameters are Poisson HAZARD rates. That is a
@@ -22,8 +24,9 @@ Time unit = ONE QUARTER throughout (Delta = 1). Data are quarterly.
 
 Usage
 -----
-    python 4_estimate_ctmc_rates.py                       # Routes A, B, C + comparison
-    python 4_estimate_ctmc_rates.py --tenure              # also Route D (grouped exponential)
+    python 4_estimate_ctmc_rates.py --sample full          # full 2023-2024 sample
+    python 4_estimate_ctmc_rates.py --sample higher-ed     # VD3004 == 7, 2023-2024
+    python 4_estimate_ctmc_rates.py --tenure               # also Route D
 """
 
 import argparse
@@ -33,6 +36,8 @@ import numpy as np
 import pandas as pd
 from scipy.linalg import expm, logm
 from scipy.optimize import minimize
+
+from harmonized_data import add_sample_argument, load_harmonized
 
 ROOT = Path(__file__).resolve().parent.parent
 CLEANED_DIR = ROOT / "Cleaned Data"
@@ -57,16 +62,8 @@ def _ind(df, col):
     return pd.to_numeric(df[col], errors="coerce").fillna(0).eq(1)
 
 
-def load_panel(cols=COLS):
-    frames = []
-    for year in YEARS:
-        path = CLEANED_DIR / f"PNADC_limpo_{year}.dta"
-        print(f"Loading {path.name} ...")
-        # read the header once to intersect requested columns with what exists
-        head = next(pd.read_stata(path, convert_categoricals=False, chunksize=1))
-        use = [c for c in cols if c in head.columns]
-        frames.append(pd.read_stata(path, columns=use, convert_categoricals=False))
-    df = pd.concat(frames, ignore_index=True)
+def load_panel(sample, cols=COLS):
+    df = load_harmonized(CLEANED_DIR, sample, columns=cols, years=YEARS)
     df["ano"] = pd.to_numeric(df["ano"], errors="coerce")
     df["trimestre"] = pd.to_numeric(df["trimestre"], errors="coerce")
     base = int(df["ano"].min())
@@ -262,9 +259,10 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tenure", action="store_true", help="Also run Route D.")
     ap.add_argument("--delta", type=float, default=1.0, help="Obs period in quarters.")
+    add_sample_argument(ap)
     args = ap.parse_args()
 
-    df = load_panel()
+    df = load_panel(args.sample)
     pairs, panel = consecutive_pairs(df)
     counts, Phat = empirical_matrices(pairs)
 

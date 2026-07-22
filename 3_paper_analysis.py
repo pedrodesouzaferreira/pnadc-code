@@ -17,10 +17,8 @@ with one file. The paper-relevant outputs, and where they used to come from, are
 
 Data source
 -----------
-Reads the CLEANED Stata files directly (they are the canonical cleaned data):
-    Cleaned Data/PNADC_limpo_2023.dta
-    Cleaned Data/PNADC_limpo_2024.dta
-Only the columns needed below are loaded, to keep memory manageable.
+Reads the selected harmonized Parquet dataset. Both choices are restricted to
+2023-2024 for comparability with the original paper analysis.
 
 Labor-market states (paper mapping, Section "Data: PNADC")
     U = unemployed          : desocupado OR unpaid family worker (trab_familiar_aux)
@@ -31,7 +29,8 @@ transition matrices).
 
 Usage
 -----
-    python 3_paper_analysis.py                       # all figures + table_1, GMM with default grid
+    python 3_paper_analysis.py --sample full         # full 2023-2024 sample
+    python 3_paper_analysis.py --sample higher-ed    # VD3004 == 7, restricted to 2023-2024
     python 3_paper_analysis.py --no-gmm              # skip the (slow) bootstrap GMM table
     python 3_paper_analysis.py --bootstrap 500 --alphas 0.03 0.06 --lambda0s 0.50 0.80
 
@@ -52,6 +51,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import norm, gaussian_kde
+
+from harmonized_data import add_sample_argument, load_harmonized
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -99,17 +100,9 @@ def _ind(df, col):
     return pd.to_numeric(df[col], errors="coerce").fillna(0).eq(1)
 
 
-def load_panel():
-    """Load both years from .dta, keep needed columns, build the person-quarter panel."""
-    frames = []
-    for year in YEARS:
-        path = CLEANED_DIR / f"PNADC_limpo_{year}.dta"
-        print(f"Loading {path.name} ...")
-        avail = pd.read_stata(path, convert_categoricals=False, iterator=True).varlist
-        use = [c for c in COLS if c in avail]
-        df = pd.read_stata(path, columns=use, convert_categoricals=False)
-        frames.append(df)
-    df = pd.concat(frames, ignore_index=True)
+def load_panel(sample):
+    """Load 2023-2024 from the selected harmonized Parquet dataset."""
+    df = load_harmonized(CLEANED_DIR, sample, columns=COLS, years=YEARS)
 
     for c in ["ano", "trimestre", "renda_habitual_principal",
               "horas_habituais_principal", "peso"]:
@@ -550,9 +543,10 @@ def main():
     ap.add_argument("--min-wage", type=float, default=MIN_WAGE)
     ap.add_argument("--no-gmm", action="store_true", help="Skip the GMM table.")
     ap.add_argument("--unweighted-table1", action="store_true")
+    add_sample_argument(ap)
     args = ap.parse_args()
 
-    df = load_panel()
+    df = load_panel(args.sample)
 
     print("\n== figure_1 (transition probabilities) ==")
     make_figure_1(df)

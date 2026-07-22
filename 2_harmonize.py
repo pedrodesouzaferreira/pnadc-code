@@ -10,14 +10,23 @@ Two independent scopes are supported:
     The two full cleaned files, ``PNADC_limpo_2023.dta`` and
     ``PNADC_limpo_2024.dta``.
 
+Examples::
+
+    python 2_harmonize.py --sample higher-ed
+    python 2_harmonize.py --sample full
+    python 2_harmonize.py --sample both
+
 The script standardizes raw IBGE variable-name capitalization, aligns columns,
 adds a source-file field, and deflates all readable wage/income variables to
 2025-Q3 prices.  Nominal variables are retained; harmonized variables receive
 the suffix ``_real_2025q3``.  Following ``10_fillins_pnadc_fulltime.do``, the
 factor is CO2(year, quarter, UF) / CO2(2025 Q3, UF).
 
-Each scope is loaded and merged entirely in memory, then exported as one
-compressed Parquet file.  This is intended for a high-memory compute node.
+Each scope is loaded and merged entirely in memory, then exported as compressed
+Parquet and Stata files.  Parquet includes the added ``*_real_2025q3`` columns;
+the Stata copy retains the nominal variables and deflator columns, allowing the
+real values to be reconstructed without exceeding Stata's 32-character name
+limit.  This is intended for a high-memory compute node.
 """
 
 from __future__ import annotations
@@ -288,13 +297,30 @@ def add_deflated_wages(
     return frame, wages
 
 
-def output_path(cleaned_dir: Path, scope: Scope, sources: list[Source]) -> Path:
+def output_paths(cleaned_dir: Path, scope: Scope, sources: list[Source]) -> dict[str, Path]:
     years = [source.year for source in sources]
     if scope == "higher-ed":
         stem = f"PNADC_harmonized_VD3004_7_{min(years)}_{max(years)}"
     else:
         stem = f"PNADC_harmonized_full_{min(years)}_{max(years)}"
-    return cleaned_dir / f"{stem}.parquet"
+    return {
+        "parquet": cleaned_dir / f"{stem}.parquet",
+        "dta": cleaned_dir / f"{stem}.dta",
+    }
+
+
+def stata_compatible_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Drop long derived names and convert extension dtypes for pandas Stata I/O."""
+    derived = [column for column in frame if column.endswith("_real_2025q3")]
+    stata = frame.drop(columns=derived).copy()
+    for column in stata.columns:
+        if pd.api.types.is_string_dtype(stata[column].dtype):
+            stata[column] = stata[column].astype(object).where(stata[column].notna(), None)
+        elif pd.api.types.is_bool_dtype(stata[column].dtype):
+            stata[column] = stata[column].astype("int8")
+        elif pd.api.types.is_numeric_dtype(stata[column].dtype):
+            stata[column] = pd.to_numeric(stata[column], errors="coerce").astype("float64")
+    return stata
 
 
 def run_scope(
@@ -302,6 +328,7 @@ def run_scope(
     deflator: pd.DataFrame,
     scope: Scope,
     overwrite: bool,
+    output_format: str,
     higher_ed_years: tuple[int, ...] = HIGHER_ED_YEARS,
 ) -> Path:
     sources = discover_sources(cleaned_dir, scope, higher_ed_years)
@@ -321,47 +348,67 @@ def run_scope(
         ", ".join(source.path.name for source in sources),
     )
 
-    destination = output_path(cleaned_dir, scope, sources)
-    if destination.exists() and not overwrite:
+    destinations = output_paths(cleaned_dir, scope, sources)
+    selected_formats = ("parquet", "dta") if output_format == "both" else (output_format,)
+    existing = [destinations[fmt] for fmt in selected_formats if destinations[fmt].exists()]
+    if existing and not overwrite:
         raise FileExistsError(
-            f"Output already exists: {destination}. Use --overwrite to replace it."
+            "Output already exists: "
+            + ", ".join(map(str, existing))
+            + ". Use --overwrite to replace it."
         )
-    temporary = destination.with_suffix(destination.suffix + ".tmp")
-    if temporary.exists():
-        temporary.unlink()
+    temporary = {
+        fmt: destinations[fmt].with_suffix(destinations[fmt].suffix + ".tmp")
+        for fmt in selected_formats
+    }
+    for path in temporary.values():
+        if path.exists():
+            path.unlink()
 
     try:
-        print(f"  writing {len(combined):,} merged rows to {destination.name}")
-        combined.to_parquet(
-            temporary,
-            index=False,
-            engine="pyarrow",
-            compression="zstd",
-        )
-        os.replace(temporary, destination)
+        if "parquet" in selected_formats:
+            print(f"  writing {len(combined):,} merged rows to {destinations['parquet'].name}")
+            combined.to_parquet(
+                temporary["parquet"],
+                index=False,
+                engine="pyarrow",
+                compression="zstd",
+            )
+        if "dta" in selected_formats:
+            print(f"  writing Stata copy to {destinations['dta'].name}")
+            stata = stata_compatible_frame(combined)
+            stata.to_stata(temporary["dta"], write_index=False, version=118)
+            del stata
+        for fmt in selected_formats:
+            os.replace(temporary[fmt], destinations[fmt])
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        for path in temporary.values():
+            if path.exists():
+                path.unlink()
 
-    print(f"Wrote {len(combined):,} rows and {len(combined.columns):,} columns: {destination}")
+    for fmt in selected_formats:
+        print(f"Wrote {fmt}: {destinations[fmt]}")
+    print(f"Rows: {len(combined):,}; Parquet columns: {len(combined.columns):,}")
     print(f"Deflated variables ({len(wages)}): {', '.join(wages)}")
-    return destination
+    return destinations[selected_formats[0]]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--sample",
         "--scope",
+        dest="sample",
         choices=("both", "higher-ed", "full"),
         default="both",
-        help="Dataset collection(s) to harmonize.",
+        help="Sample to harmonize; --scope is retained as an alias.",
     )
     parser.add_argument("--pnadc-dir", type=Path, default=default_pnadc_dir())
     parser.add_argument(
         "--deflator",
         type=Path,
         default=None,
-        help="Defaults to PNADC/Raw Data/deflator_PNADC_2025.xls.",
+        help="Defaults to PNADC/Raw data/deflator_PNADC_2025.xls.",
     )
     parser.add_argument(
         "--higher-ed-years",
@@ -369,6 +416,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=list(HIGHER_ED_YEARS),
         help="Expected higher-education waves; missing years are an error.",
+    )
+    parser.add_argument(
+        "--output-format",
+        choices=("both", "parquet", "dta"),
+        default="both",
+        help="Output format(s); analyses use Parquet in Python and DTA in Stata.",
     )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -381,20 +434,21 @@ def main() -> None:
     deflator_path = (
         args.deflator.expanduser().resolve()
         if args.deflator is not None
-        else pnadc_dir / "Raw Data" / "deflator_PNADC_2025.xls"
+        else pnadc_dir / "Raw data" / "deflator_PNADC_2025.xls"
     )
     print(f"PNADC directory: {pnadc_dir}")
     print(f"Deflator: {deflator_path}")
     deflator = load_deflator(deflator_path)
 
     scopes: tuple[Scope, ...]
-    scopes = ("higher-ed", "full") if args.scope == "both" else (args.scope,)
+    scopes = ("higher-ed", "full") if args.sample == "both" else (args.sample,)
     for scope in scopes:
         run_scope(
             cleaned_dir,
             deflator,
             scope,
             args.overwrite,
+            args.output_format,
             tuple(sorted(set(args.higher_ed_years))),
         )
 

@@ -2,10 +2,19 @@
 * Analysis of PNADC data
 ***********************
 
+* Usage: do Code/6_analysis.do full
+*        do Code/6_analysis.do higher-ed
+args sample
+if "`sample'" == "" local sample "full"
+if !inlist("`sample'", "full", "higher-ed") {
+    di as error "sample must be full or higher-ed"
+    exit 198
+}
+
 * Run from either PNADC/ or PNADC/Code without a user-specific path.
-capture confirm file "Cleaned Data/PNADC_limpo_2023.dta"
+capture confirm file "Code/6_analysis.do"
 if _rc {
-    capture confirm file "../Cleaned Data/PNADC_limpo_2023.dta"
+    capture confirm file "6_analysis.do"
     if !_rc {
         cd ".."
     }
@@ -20,20 +29,20 @@ if _rc {
 * 0. Data loading and exploration 
 ************************************
 
-*import delimited "Cleaned Data/PNADC_limpo_2024.csv", clear 
-*save "Cleaned Data/PNADC_limpo_2024.dta", replace
-
-*import delimited "Cleaned Data/PNADC_limpo_2023.csv", clear
-*save "Cleaned Data/PNADC_limpo_2023.dta", replace
-
-use "Cleaned Data/PNADC_limpo_2023.dta", clear
-drop v40582_label
-g v40582_label = ""
-drop  v40592_label 
-g  v40592_label = ""
-drop v405921_label
-g v405921_label =""
-append using "Cleaned Data/PNADC_limpo_2024.dta"
+if "`sample'" == "full" {
+    local harmonized "Cleaned Data/PNADC_harmonized_full_2023_2024.dta"
+}
+else {
+    local harmonized "Cleaned Data/PNADC_harmonized_VD3004_7_2016_2025.dta"
+}
+capture confirm file "`harmonized'"
+if _rc {
+    di as error "Missing `harmonized'. Run: python Code/2_harmonize.py --sample `sample'"
+    exit 601
+}
+use "`harmonized'", clear
+keep if inlist(ano, 2023, 2024)
+di as text "Analysis sample: `sample' (`=_N' person-quarter rows)"
 
 * Creating a single time variable based on ano and trimestre
 gen time = (ano - 2023) * 4 + trimestre
