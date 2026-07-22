@@ -43,7 +43,10 @@ STATUTORY_MIN_WAGE = 1302.0  # used by diagnostics regardless of --min-wage
 YEARS = (2023, 2024)
 HOURS_MIN = 30
 REAL_WAGE_COLUMN = "renda_habitual_principal_real_2025q3"  # deflated to 2025q3 by 2_harmonize.py
-MIN_WAGE_BY_YEAR = {2023: 1302.0, 2024: 1412.0}            # nominal statutory monthly minimum (BRL)
+MIN_WAGE_BY_YEAR = {                                       # nominal statutory monthly minimum (BRL)
+    2016: 880.0, 2017: 937.0, 2018: 954.0, 2019: 998.0, 2020: 1045.0,
+    2021: 1100.0, 2022: 1212.0, 2023: 1302.0, 2024: 1412.0, 2025: 1518.0,
+}
 RAW_COLUMNS = [
     "id_pessoa", "ano", "trimestre",
     "renda_habitual_principal", REAL_WAGE_COLUMN,
@@ -168,9 +171,9 @@ def _print_sample_diagnostics(df, statutory_min=STATUTORY_MIN_WAGE):
     print("----- END DIAGNOSTICS -----\n")
 
 
-def load_harmonized_panel(sample, diagnose=True, min_wage_override=None):
+def load_harmonized_panel(sample, diagnose=True, min_wage_override=None, years=YEARS):
     """Construct the consecutive-quarter GMM panel from harmonized data."""
-    df = load_harmonized(CLEANED_DIR, sample, columns=RAW_COLUMNS, years=YEARS)
+    df = load_harmonized(CLEANED_DIR, sample, columns=RAW_COLUMNS, years=years)
     for column in ["ano", "trimestre", "renda_habitual_principal",
                    "horas_habituais_principal", REAL_WAGE_COLUMN]:
         if column in df.columns:
@@ -580,6 +583,11 @@ def main():
     add_sample_argument(parser)
     parser.add_argument("--no-diagnose", dest="diagnose", action="store_false",
                         default=True, help="Suppress the sample-funnel diagnostics.")
+    parser.add_argument("--year-min", type=int, default=2023,
+                        help="First year to include (default 2023). "
+                             "The higher-ed sample spans 2016-2025; the full sample is 2023-2024 only.")
+    parser.add_argument("--year-max", type=int, default=2024,
+                        help="Last year to include (default 2024).")
     parser.add_argument("--alphas", type=float, nargs="+", required=True, help="List of calibrated alpha values.")
     parser.add_argument("--lambda0s", type=float, nargs="+", required=True, help="List of calibrated lambda_0 values.")
     parser.add_argument("--min-wage", type=float, default=-1.0,
@@ -598,7 +606,10 @@ def main():
 
     combos = [(a, l) for a, l in product(args.alphas, args.lambda0s)]
 
-    df = load_prepared_panel(args.input) if args.input is not None else load_harmonized_panel(args.sample, diagnose=args.diagnose, min_wage_override=args.min_wage)
+    years = tuple(range(args.year_min, args.year_max + 1))
+    df = (load_prepared_panel(args.input) if args.input is not None
+          else load_harmonized_panel(args.sample, diagnose=args.diagnose,
+                                      min_wage_override=args.min_wage, years=years))
     raw = extract_raw_objects(df)
     m = build_trimmed_moments(raw, cut_public=0.0, cut_private=0.0)  # floor applied upstream (per-year, real)
 
