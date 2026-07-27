@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 # ============================================================================
 # 5_descriptives.py
-# Tabulações simples da PNADC Contínua do 3º trimestre de 2024 (POPULAÇÃO TODA):
+# Tabulações simples da PNADC Contínua do 3º trimestre de 2024,
+# SÓ para pessoas NA FORÇA DE TRABALHO (ocupadas OU desocupadas procurando):
 #   - gênero
 #   - faixa de renda
 #   - escolaridade
 #   - região
 #
-# Para que serve: descrever a população para mandar pra empresa de pesquisa
+# Para que serve: descrever essa população para mandar pra empresa de pesquisa
 # montar uma amostra representativa. As porcentagens usam o peso da PNADC,
 # então representam a POPULAÇÃO (não só a amostra).
 #
@@ -29,25 +30,20 @@ pd.set_option("display.float_format", lambda x: f"{x:.1f}")
 aqui = os.path.dirname(os.path.abspath(__file__))
 caminho = os.path.join(aqui, "..", "Cleaned Data", "PNADC_limpo_2024.dta")
 
-colunas = ["ano", "trimestre", "sexo", "nivel_instrucao_label",
+colunas = ["ano", "trimestre", "na_pea", "sexo", "nivel_instrucao_label",
            "renda_efetiva_principal", "peso", "id_uf"]
 
 # ----------------------------------------------------------------------------
-# 2) Ler os dados
-#    O arquivo é grande (~8,5 GB), então lemos em PEDAÇOS e já jogamos fora
-#    tudo que não é o 3º trimestre de 2024 (assim não estoura a memória).
-#    Se a sua máquina tiver bastante RAM, dá pra trocar o loop por uma linha:
-#        dados = pd.read_stata(caminho, columns=colunas)
-#    e filtrar depois.
+# 2) Ler os dados de uma vez só (o superPC tem RAM de sobra) e filtrar:
+#    - 3º trimestre de 2024
+#    - na_pea == 1  -> pessoas na força de trabalho (ocupadas ou desocupadas).
+#      (na_pea vem de VD4001/condicao_forca_trabalho == "Força de trabalho";
+#       confere exatamente com ocupado == 1 OU desocupado == 1.)
 # ----------------------------------------------------------------------------
-pedacos = []
-for pedaco in pd.read_stata(caminho, columns=colunas, chunksize=100000):
-    so_q3 = pedaco[(pedaco["ano"] == 2024) & (pedaco["trimestre"] == 3)]
-    pedacos.append(so_q3)
+dados = pd.read_stata(caminho, columns=colunas)
+dados = dados[(dados["ano"] == 2024) & (dados["trimestre"] == 3) & (dados["na_pea"] == 1)]
 
-dados = pd.concat(pedacos)
-
-print("Pessoas na amostra (2024 T3):", len(dados))
+print("Pessoas na amostra (2024 T3, na força de trabalho):", len(dados))
 print("População representada (soma dos pesos):", round(dados["peso"].sum()))
 print()
 
@@ -70,7 +66,7 @@ dados["regiao"] = (dados["id_uf"] // 10).map({1: "Norte", 2: "Nordeste",
                                               5: "Centro-Oeste"})
 
 # Faixa de renda (renda do trabalho principal, R$ por mês).
-# Olhamos só quem tem renda positiva no trabalho principal.
+# Aqui os desocupados entram como "Sem renda de trabalho" (não têm trabalho principal).
 com_renda = dados[dados["renda_efetiva_principal"] > 0].copy()
 limites = [0, 1000, 2000, 3000, 5000, 10000, 100000000]
 nomes   = ["Até 1.000", "1.000 a 2.000", "2.000 a 3.000",
@@ -100,7 +96,7 @@ tabela_renda = pd.DataFrame({"n_amostra": n_amostra,
                              "pct_pop": 100 * soma_peso / soma_peso.sum()})
 print("=== FAIXA DE RENDA (trabalho principal, R$/mês) ===")
 print(tabela_renda)
-print("(entre quem tem renda do trabalho principal maior que zero)")
+print("(entre os ocupados com renda do trabalho principal maior que zero)")
 print()
 
 # ----------------------------------------------------------------------------
