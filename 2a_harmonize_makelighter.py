@@ -7,6 +7,14 @@ for everyday analysis, small enough to run on a laptop. For each nominal
 wage/income variable in that subset, both the nominal column and its
 ``_real_2025q3`` deflated counterpart are included.
 
+The subset also carries the raw occupation/position variables (V4010,
+V4025, posicao_trab_principal, servidor_publico_estatutario,
+carteira_assinada) needed to reproduce the ``define_public_sector``
+redefinition of the public sector used by 10_fillins_pnadc_fulltime.do --
+the harmonized ``empregado_setor_pub`` flag alone is a different, broader
+definition -- and the deflator itself (co2, co2_2025q3,
+deflator_wage_2025q3) so the applied factor can be checked directly.
+
 Usage
 -----
     python 2a_harmonize_makelighter.py --sample higher-ed
@@ -33,6 +41,9 @@ CLEANED_DIR = ROOT / "Cleaned Data"
 BASE_COLUMNS = [
     "ano", "trimestre", "id_uf", "id_pessoa", "id_domicilio", "peso", "idade",
     "V3004", "servidor_publico_estatutario", "carteira_assinada",
+    # Occupation/position variables needed to reproduce the
+    # define_public_sector redefinition in 10_fillins_pnadc_fulltime.do.
+    "V4010", "V4025", "posicao_trab_principal",
     "valor_dinheiro_principal", "valor_dinheiro_efetivo_principal",
     "horas_habituais_principal", "horas_efetivas_principal",
     "tempo_nesse_trabalho", "tomou_providencia_busca",
@@ -58,10 +69,14 @@ WAGE_COLUMNS = [
     "renda_habitual_principal_winsor",
 ]
 
+# The deflator itself (see 2_harmonize.py's load_deflator/add_deflated_wages),
+# carried through so the applied factor can be checked directly.
+DEFLATOR_COLUMNS = ["co2", "co2_2025q3", "deflator_wage_2025q3"]
+
 
 def requested_columns() -> list[str]:
     deflated = [f"{column}_real_2025q3" for column in WAGE_COLUMNS]
-    return BASE_COLUMNS + deflated
+    return BASE_COLUMNS + deflated + DEFLATOR_COLUMNS
 
 
 def resolve_harmonized_input(cleaned_dir: Path, sample: str) -> tuple[Path, str]:
