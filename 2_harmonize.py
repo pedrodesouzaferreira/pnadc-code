@@ -23,10 +23,11 @@ the suffix ``_real_2025q3``.  Following ``10_fillins_pnadc_fulltime.do``, the
 factor is CO2(year, quarter, UF) / CO2(2025 Q3, UF).
 
 Each scope is loaded and merged entirely in memory, then exported as compressed
-Parquet and Stata files.  Parquet includes the added ``*_real_2025q3`` columns;
-the Stata copy retains the nominal variables and deflator columns, allowing the
-real values to be reconstructed without exceeding Stata's 32-character name
-limit.  This is intended for a high-memory compute node.
+Parquet, Stata, and CSV files.  Parquet and CSV include the added
+``*_real_2025q3`` columns; the Stata copy retains the nominal variables and
+deflator columns, allowing the real values to be reconstructed without
+exceeding Stata's 32-character name limit.  This is intended for a
+high-memory compute node.
 """
 
 from __future__ import annotations
@@ -306,6 +307,7 @@ def output_paths(cleaned_dir: Path, scope: Scope, sources: list[Source]) -> dict
     return {
         "parquet": cleaned_dir / f"{stem}.parquet",
         "dta": cleaned_dir / f"{stem}.dta",
+        "csv": cleaned_dir / f"{stem}.csv",
     }
 
 
@@ -349,7 +351,9 @@ def run_scope(
     )
 
     destinations = output_paths(cleaned_dir, scope, sources)
-    selected_formats = ("parquet", "dta") if output_format == "both" else (output_format,)
+    selected_formats = (
+        ("parquet", "dta", "csv") if output_format == "both" else (output_format,)
+    )
     existing = [destinations[fmt] for fmt in selected_formats if destinations[fmt].exists()]
     if existing and not overwrite:
         raise FileExistsError(
@@ -379,6 +383,9 @@ def run_scope(
             stata = stata_compatible_frame(combined)
             stata.to_stata(temporary["dta"], write_index=False, version=118)
             del stata
+        if "csv" in selected_formats:
+            print(f"  writing CSV copy to {destinations['csv'].name}")
+            combined.to_csv(temporary["csv"], index=False)
         for fmt in selected_formats:
             os.replace(temporary[fmt], destinations[fmt])
     finally:
@@ -419,9 +426,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-format",
-        choices=("both", "parquet", "dta"),
+        choices=("both", "parquet", "dta", "csv"),
         default="both",
-        help="Output format(s); analyses use Parquet in Python and DTA in Stata.",
+        help=(
+            "Output format(s); 'both' writes Parquet, Stata, and CSV. Analyses "
+            "use Parquet in Python and DTA in Stata."
+        ),
     )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
