@@ -1,10 +1,11 @@
 """Export a lightweight CSV subset of the harmonized PNADC panel.
 
-Reads the harmonized Parquet file(s) produced by 2_harmonize.py and writes a
-much smaller CSV with only the identifying, demographic, employment, and
-job-search variables needed for everyday analysis -- small enough to run on
-a laptop. For each nominal wage/income variable in that subset, both the
-nominal column and its ``_real_2025q3`` deflated counterpart are included.
+Reads the harmonized file(s) produced by 2_harmonize.py -- Parquet if
+present, otherwise the CSV copy -- and writes a much smaller CSV with only
+the identifying, demographic, employment, and job-search variables needed
+for everyday analysis, small enough to run on a laptop. For each nominal
+wage/income variable in that subset, both the nominal column and its
+``_real_2025q3`` deflated counterpart are included.
 
 Usage
 -----
@@ -12,7 +13,7 @@ Usage
     python 2a_harmonize_makelighter.py --sample full
     python 2a_harmonize_makelighter.py --sample both
 
-Requires the harmonized Parquet file(s) already produced by 2_harmonize.py.
+Requires a harmonized Parquet or CSV file already produced by 2_harmonize.py.
 """
 
 from __future__ import annotations
@@ -21,9 +22,10 @@ import argparse
 import os
 from pathlib import Path
 
+import pandas as pd
 import pyarrow.parquet as pq
 
-from harmonized_data import SAMPLES, harmonized_path, load_harmonized
+from harmonized_data import HARMONIZED_FILES, SAMPLES
 
 ROOT = Path(__file__).resolve().parent.parent
 CLEANED_DIR = ROOT / "Cleaned Data"
@@ -62,20 +64,52 @@ def requested_columns() -> list[str]:
     return BASE_COLUMNS + deflated
 
 
+def resolve_harmonized_input(cleaned_dir: Path, sample: str) -> tuple[Path, str]:
+    """Locate the harmonized input for `sample`, preferring Parquet over CSV."""
+    if sample not in HARMONIZED_FILES:
+        raise ValueError(f"Unknown sample {sample!r}; choose from {SAMPLES}")
+    stem = Path(HARMONIZED_FILES[sample]).stem
+    for suffix, kind in ((".parquet", "parquet"), (".csv", "csv")):
+        path = cleaned_dir / f"{stem}{suffix}"
+        if path.exists() and path.stat().st_size > 0:
+            return path, kind
+    raise FileNotFoundError(
+        f"No harmonized {sample!r} input (.parquet or .csv) in {cleaned_dir}. "
+        f"Run `python 2_harmonize.py --sample {sample}` first."
+    )
+
+
+def available_columns(path: Path, kind: str) -> set[str]:
+    if kind == "parquet":
+        return set(pq.ParquetFile(path).schema_arrow.names)
+    return set(pd.read_csv(path, nrows=0).columns)
+
+
+def read_selected(path: Path, kind: str, columns: list[str]) -> pd.DataFrame:
+    print(f"Loading harmonized input: {path.name}")
+    if kind == "parquet":
+        frame = pd.read_parquet(path, columns=columns)
+    else:
+        frame = pd.read_csv(path, usecols=columns, low_memory=False)
+    print(f"Loaded {len(frame):,} rows and {len(frame.columns):,} columns")
+    return frame
+
+
 def light_output_path(cleaned_dir: Path, sample: str) -> Path:
-    stem = harmonized_path(cleaned_dir, sample).stem
+    stem = Path(HARMONIZED_FILES[sample]).stem
     return cleaned_dir / f"{stem}_light.csv"
 
 
 def export_sample(cleaned_dir: Path, sample: str, overwrite: bool) -> Path:
-    path = harmonized_path(cleaned_dir, sample)
-    available = set(pq.ParquetFile(path).schema_arrow.names)
+    path, kind = resolve_harmonized_input(cleaned_dir, sample)
+    available = available_columns(path, kind)
     wanted = requested_columns()
     missing = [column for column in wanted if column not in available]
     if missing:
         print(f"  ({sample}) not in {path.name}, skipping: {', '.join(missing)}")
+    present = [column for column in wanted if column in available]
 
-    frame = load_harmonized(cleaned_dir, sample, columns=wanted)
+    frame = read_selected(path, kind, present)
 
     destination = light_output_path(cleaned_dir, sample)
     if destination.exists() and not overwrite:
