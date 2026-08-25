@@ -1,6 +1,6 @@
-cd "/Users/pedroferreira/Dropbox (Personal)/MY PROJECTS/CONCURSOS/Data/PNADC/Cleaned Data/"
+cd "/Users/pedroferreira/Dropbox (Personal)/MY PROJECTS/CONCURSOS/Data/PNADC/"
 
-import delimited "PNADC_harmonized_VD3004_7_2016_2025_light.csv", clear
+import delimited "Cleaned Data/PNADC_harmonized_VD3004_7_2016_2025_light.csv", clear
 
 sum renda_efetiva_principal_real_202 if empregado_setor_priv == 1 & horas_habituais_principal >= 30, d
 
@@ -85,35 +85,121 @@ gl estat_3qrt_2022 servidor_publico_estatutario == 1 & horas_habituais_principal
 gl estat servidor_publico_estatutario == 1 & horas_habituais_principal >= 35 & !missing(horas_habituais_principal) & renda_habitual_principal_real_20 > 0
 
 
-// (PILOT 1) Wages: Third quarter 2022 and nonwinsorized 
-*sum renda_habitual_principal_real_20 [weight = peso] if $pub_3qrt_2022, d
-sum renda_habitual_principal_real_20 [weight = peso] if $estat_3qrt_2022, d
-sum renda_habitual_principal_real_20 [weight = peso] if $pri_3qrt_2022, d
-*sum renda_habitual_principal_real_20 [weight = peso] if idade_22_24 == 1 & $pub_3qrt_2022, d
-sum renda_habitual_principal_real_20 [weight = peso] if idade_22_24 == 1 & $estat_3qrt_2022, d
-sum renda_habitual_principal_real_20 [weight = peso] if idade_22_24 == 1 & $pri_3qrt_2022, d
+// Requires the estout package: ssc install estout
+capture which esttab
+if _rc ssc install estout
+
+// (PILOT 1) Wages: Third quarter 2022 and nonwinsorized
+estpost summarize renda_habitual_principal_real_20 [aweight = peso] if $pub_3qrt_2022, detail
+eststo wage_estat
+estpost summarize renda_habitual_principal_real_20 [aweight = peso] if $pri_3qrt_2022, detail
+eststo wage_pri
+estpost summarize renda_habitual_principal_real_20 [aweight = peso] if idade_22_24 == 1 & $pub_3qrt_2022, detail
+eststo wage_estat_2224
+estpost summarize renda_habitual_principal_real_20 [aweight = peso] if idade_22_24 == 1 & $pri_3qrt_2022, detail
+eststo wage_pri_2224
+
+esttab wage_estat wage_pri wage_estat_2224 wage_pri_2224 using "Output/pnadc_pilot1_wages.csv", ///
+    replace cells("p50(fmt(2)) p90(fmt(2)) count(fmt(0))") mtitles("Publico" "Privado" "Publico 22-24" "Privado 22-24") noobs nonumber
 
 
-// (PILOT 1) Stability 
-*sum desocupado_f4 [weight = peso] if $pub
-sum desocupado_f4 [weight = peso] if $estat
-sum desocupado_f4 [weight = peso] if $pri
-*sum desocupado_f4 [weight = peso] if idade_22_24 == 1 & $pub
-sum desocupado_f4 [weight = peso] if idade_22_24 == 1 & $estat
-sum desocupado_f4 [weight = peso] if idade_22_24 == 1 & $pri 
+// (PILOT 1) Stability
+estpost summarize desocupado_f4 [aweight = peso] if $pub
+eststo stab_estat
+estpost summarize desocupado_f4 [aweight = peso] if $pri
+eststo stab_pri
+estpost summarize desocupado_f4 [aweight = peso] if idade_22_24 == 1 & $pub
+eststo stab_estat_2224
+estpost summarize desocupado_f4 [aweight = peso] if idade_22_24 == 1 & $pri
+eststo stab_pri_2224
+
+esttab stab_estat stab_pri stab_estat_2224 stab_pri_2224 using "Output/pnadc_pilot1_stability.csv", ///
+    replace cells("mean(fmt(4)) count(fmt(0))") mtitles("Publico" "Privado" "Publico 22-24" "Privado 22-24") noobs nonumber
 
 
-// (PILOT 1) Job finding rates 
-*sum pub_ft_f4 [weight = peso] if private_focus == 1
-sum estat_ft_f4 [weight = peso] if private_focus == 1
-sum priv_ft_f4 [weight = peso] if private_focus == 1
-*sum pub_ft_f4 [weight = peso] if private_focus == 1
-sum estat_ft_f4 [weight = peso] if idade_22_24 == 1 & private_focus == 1
-sum priv_ft_f4 [weight = peso] if idade_22_24 == 1 & private_focus == 1
+// (PILOT 1) Job finding rates
+estpost summarize pub_ft_f4 [aweight = peso] if private_focus == 1
+eststo jf_estat_privfocus
+estpost summarize priv_ft_f4 [aweight = peso] if private_focus == 1
+eststo jf_pri_privfocus
+estpost summarize pub_ft_f4 [aweight = peso] if idade_22_24 == 1 & private_focus == 1
+eststo jf_estat_privfocus_2224
+estpost summarize priv_ft_f4 [aweight = peso] if idade_22_24 == 1 & private_focus == 1
+eststo jf_pri_privfocus_2224
 
-*sum pub_ft_f4 [weight = peso] if exam_search == 1
-sum estat_ft_f4 [weight = peso] if exam_search == 1
-sum priv_ft_f4 [weight = peso] if exam_search == 1
-*sum pub_ft_f4 [weight = peso] if exam_search == 1
-sum estat_ft_f4 [weight = peso] if idade_22_24 == 1 & exam_search == 1
-sum priv_ft_f4 [weight = peso] if idade_22_24 == 1 & exam_search == 1
+estpost summarize pub_ft_f4 [aweight = peso] if exam_search == 1
+eststo jf_estat_exam
+estpost summarize priv_ft_f4 [aweight = peso] if exam_search == 1
+eststo jf_pri_exam
+estpost summarize pub_ft_f4 [aweight = peso] if idade_22_24 == 1 & exam_search == 1
+eststo jf_estat_exam_2224
+estpost summarize priv_ft_f4 [aweight = peso] if idade_22_24 == 1 & exam_search == 1
+eststo jf_pri_exam_2224
+
+esttab jf_estat_privfocus jf_pri_privfocus jf_estat_privfocus_2224 jf_pri_privfocus_2224 ///
+    jf_estat_exam jf_pri_exam jf_estat_exam_2224 jf_pri_exam_2224 using "Output/pnadc_pilot1_jobfinding.csv", ///
+    replace cells("mean(fmt(4)) count(fmt(0))") ///
+    mtitles("Publico privfocus" "Privado privfocus" "Publico privfocus 22-24" "Privado privfocus 22-24" ///
+        "Publico exam" "Privado exam" "Publico exam 22-24" "Privado exam 22-24") noobs nonumber
+
+
+* In PILOT 2, we will use the first wage observation for each individual after 2022, rather than the third quarter.
+
+
+// (PILOT 2) Wages: All quarters post 2022 and nonwinsorized
+estpost summarize renda_habitual_principal_real_20 [aweight = peso] if $pub_first_2022, detail
+eststo wage_pub
+estpost summarize renda_habitual_principal_real_20 [aweight = peso] if $pri_first_2022, detail
+eststo wage_pri
+estpost summarize renda_habitual_principal_real_20 [aweight = peso] if idade_22_24 == 1 & $pub_first_2022, detail
+eststo wage_pub_2224
+estpost summarize renda_habitual_principal_real_20 [aweight = peso] if idade_22_24 == 1 & $pri_first_2022, detail
+eststo wage_pri_2224
+
+esttab wage_pub wage_pri wage_pub_2224 wage_pri_2224 using "Output/pnadc_pilot2_wages.csv", ///
+    replace cells("p50(fmt(2)) p90(fmt(2)) count(fmt(0))") mtitles("Publico" "Privado" "Publico 22-24" "Privado 22-24") noobs nonumber
+
+
+// (PILOT 2) Stability
+estpost summarize desocupado_f4 [aweight = peso] if $pub
+eststo stab_pub
+estpost summarize desocupado_f4 [aweight = peso] if $pri
+eststo stab_pri
+estpost summarize desocupado_f4 [aweight = peso] if idade_22_24 == 1 & $pub
+eststo stab_pub_2224
+estpost summarize desocupado_f4 [aweight = peso] if idade_22_24 == 1 & $pri
+eststo stab_pri_2224
+
+esttab stab_pub stab_pri stab_pub_2224 stab_pri_2224 using "Output/pnadc_pilot2_stability.csv", ///
+    replace cells("mean(fmt(4)) count(fmt(0))") mtitles("Estatutario" "Privado" "Estatutario 22-24" "Privado 22-24") noobs nonumber
+
+
+// (PILOT 2) Job finding rates
+estpost summarize pub_ft_f4 [aweight = peso] if private_focus == 1
+eststo jf_pub_privfocus
+estpost summarize priv_ft_f4 [aweight = peso] if private_focus == 1
+eststo jf_pri_privfocus
+estpost summarize pub_ft_f4 [aweight = peso] if idade_22_24 == 1 & private_focus == 1
+eststo jf_pub_privfocus_2224
+estpost summarize priv_ft_f4 [aweight = peso] if idade_22_24 == 1 & private_focus == 1
+eststo jf_pri_privfocus_2224
+
+estpost summarize pub_ft_f4 [aweight = peso] if exam_search == 1
+eststo jf_pub_exam
+estpost summarize priv_ft_f4 [aweight = peso] if exam_search == 1
+eststo jf_pri_exam
+estpost summarize pub_ft_f4 [aweight = peso] if idade_22_24 == 1 & exam_search == 1
+eststo jf_pub_exam_2224
+estpost summarize priv_ft_f4 [aweight = peso] if idade_22_24 == 1 & exam_search == 1
+eststo jf_pri_exam_2224
+
+esttab jf_pub_privfocus jf_pri_privfocus jf_pub_privfocus_2224 jf_pri_privfocus_2224 ///
+    jf_pub_exam jf_pri_exam jf_pub_exam_2224 jf_pri_exam_2224 using "Output/pnadc_pilot2_jobfinding.csv", ///
+    replace cells("mean(fmt(4)) count(fmt(0))") ///
+    mtitles("Estatutario privfocus" "Privado privfocus" "Estatutario privfocus 22-24" "Privado privfocus 22-24" ///
+        "Estatutario exam" "Privado exam" "Estatutario exam 22-24" "Privado exam 22-24") noobs nonumber
+
+
+
+
+
