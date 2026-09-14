@@ -344,7 +344,7 @@ COLUNAS_RAIS = [
     "grau_instrucao_apos_2005",
     "natureza_juridica",
     "vinculo_ativo_3112",
-]
+] 
 
 # colunas que o painel guarda (as outras só servem para filtrar)
 COLUNAS_PAINEL = ["sigla_uf", "id_municipio_merge", "natureza_juridica"]
