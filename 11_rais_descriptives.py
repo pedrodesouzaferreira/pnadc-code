@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.patches import ConnectionPatch, Patch, Polygon as MplPolygon
+from matplotlib.patches import ConnectionPatch, Polygon as MplPolygon
 
 # ----------------------------------------------------------------------------
 # 0) CONFIGURAÇÃO DA RODADA
@@ -294,8 +294,8 @@ def agrega_por_rgi(rais, rgis_validas=None):
     )
     por_rgi["share_privado"] = 100 - por_rgi["share_publico"]
 
+    # o rótulo do agregado é escolhido por idioma na hora de desenhar
     agregado = {
-        "nome": NOME_AGREGADO,
         "n": len(junto),
         "n_publico": int(junto["publico"].sum()),
         "share_publico": 100 * junto["publico"].mean(),
@@ -547,7 +547,7 @@ def monta_figura(geo, por_rgi, agregado, destaques, arquivo, idioma):
     fig.text(
         0.02,
         0.955,
-        "Emprego formal de nível superior: público ou privado?",
+        txt["titulo"],
         fontsize=17,
         fontweight="bold",
         color=TINTA_FORTE,
@@ -555,24 +555,13 @@ def monta_figura(geo, por_rgi, agregado, destaques, arquivo, idioma):
     fig.text(
         0.02,
         0.915,
-        "Vínculos formais em tempo integral (≥36h) com ensino superior completo ou mais, "
-        "por Região Geográfica Imediata",
+        txt["subtitulo"],
         fontsize=10.5,
         color=TINTA_MEDIA,
     )
 
-    # ---- legenda: identidade das duas categorias nunca é só a cor ----
-    fig.legend(
-        handles=[
-            Patch(facecolor=COR_PUBLICO, edgecolor=SUPERFICIE, label="Setor público"),
-            Patch(facecolor=COR_PRIVADO, edgecolor=SUPERFICIE, label="Setor privado"),
-        ],
-        loc="lower right",
-        bbox_to_anchor=(0.99, 0.015),
-        frameon=False,
-        fontsize=10.5,
-        ncol=2,
-    )
+    # Sem caixa de legenda: cada fatia já leva o próprio nome e percentual
+    # escritos nela, então a identidade das categorias não depende da cor.
 
     # ---- barra de cor do coroplético ----
     ax_cb = fig.add_axes([0.05, 0.10, 0.20, 0.018])
@@ -581,20 +570,18 @@ def monta_figura(geo, por_rgi, agregado, destaques, arquivo, idioma):
         cax=ax_cb,
         orientation="horizontal",
     )
-    barra.set_label(
-        "% do emprego no setor público", fontsize=9, color=TINTA_MEDIA, labelpad=4
-    )
+    barra.set_label(txt["rotulo_barra"], fontsize=9, color=TINTA_MEDIA, labelpad=4)
     barra.ax.tick_params(labelsize=8, colors=TINTA_MEDIA, length=2)
     barra.outline.set_visible(False)
 
     fig.text(
         0.02,
         0.02,
-        "Fonte: RAIS 2023 (vínculos), IBGE (Regiões Geográficas Imediatas, 2017). "
+        txt["fonte"]
         + (
-            "Vínculos ativos em 31/12/2023."
+            txt["nota_estoque"]
             if SOMENTE_VINCULOS_ATIVOS_3112
-            else "Todos os vínculos observados em 2023."
+            else txt["nota_fluxo"]
         ),
         fontsize=8.5,
         color=TINTA_FRACA,
@@ -626,7 +613,7 @@ def main():
     mostra = por_rgi[["cod_rgi", "nome_rgi", "n", "n_publico", "share_publico"]]
     print(mostra.to_string(index=False, float_format=lambda v: f"{v:.1f}"))
     print(
-        f"\n   {agregado['nome']}: {agregado['share_publico']:.1f}% público / "
+        f"\n   {NOME_AGREGADO['pt']}: {agregado['share_publico']:.1f}% público / "
         f"{agregado['share_privado']:.1f}% privado (n = {agregado['n']:,})"
     )
 
@@ -637,18 +624,24 @@ def main():
     por_rgi.to_csv(csv_saida, index=False)
     print(f"\n   tabela salva em {csv_saida}")
 
-    print("\n4) figura")
+    print("\n4) figuras")
     sem_dado = rgis_validas - set(por_rgi["cod_rgi"])
     if sem_dado:
         print(f"  RGIs sem nenhum vínculo na amostra (cinza no mapa): {sorted(sem_dado)}")
 
-    monta_figura(
-        geo,
-        por_rgi,
-        agregado,
-        RGIS_DESTAQUE,
-        os.path.join(DIR_FIGURES, f"rais2023_mapa_publico_privado_{'_'.join(UFS)}"),
-    )
+    # mesma figura em cada idioma pedido: só os textos mudam
+    for idioma in IDIOMAS:
+        monta_figura(
+            geo,
+            por_rgi,
+            agregado,
+            RGIS_DESTAQUE,
+            os.path.join(
+                DIR_FIGURES,
+                f"rais2023_mapa_publico_privado_{'_'.join(UFS)}_{idioma}",
+            ),
+            idioma,
+        )
 
 
 if __name__ == "__main__":
