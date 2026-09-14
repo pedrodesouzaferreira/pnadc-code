@@ -322,7 +322,7 @@ TEXTOS = {
         ),
         "nota_estoque": "Jobs active on Dec 31, 2022.",
         "nota_fluxo": "All jobs observed during 2022.",
-        #"nota_minimo": " RGIs with fewer than {n} jobs in the sample are shown in grey.",
+        "nota_minimo": "",
         "leg_acima": "More public sector employment than {nome}",
     },
 }
