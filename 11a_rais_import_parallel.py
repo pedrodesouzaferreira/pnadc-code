@@ -77,7 +77,7 @@ except ImportError:  # pragma: no cover
 TABELA = "basedosdados.br_me_rais.microdados_vinculos"
 
 UFS_BRASIL = [
-    "AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS",
+    "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS",
     "MT", "PA", "PB", "PE", "PI", "PR", "RJ", "RN", "RO", "RR", "RS", "SC",
     "SE", "SP", "TO",
 ]
@@ -386,11 +386,6 @@ def main():
         return
 
     # ---- saída ----
-    if not args.out:
-        sys.exit(
-            "ERRO: defina a pasta de saída com --out ou RAIS_OUT_DIR.\n"
-            "  Use disco de scratch, NÃO o home (quota) e NÃO o Dropbox (sync)."
-        )
     dir_saida = os.path.expanduser(args.out)
     os.makedirs(dir_saida, exist_ok=True)
 
@@ -398,6 +393,36 @@ def main():
     log(f"projeto de billing: {projeto}")
     log(f"saída: {dir_saida}")
     log(f"colunas: {'todas' if args.all_columns else str(len(COLUNAS_ANALISE))}")
+
+    if any(p in dir_saida for p in ("Dropbox", "Google Drive", "OneDrive")):
+        log(
+            "AVISO: a saída está numa pasta sincronizada. O download vai "
+            "disparar sync (~3 GB com as colunas da análise, ~30 GB com "
+            "--all-columns). Use --out para mandar para outro lugar."
+        )
+
+    # ---- o arquivo já existe? sem --force ele é PULADO em silêncio ----
+    # Foi assim que a leva quebrada de 2023 sobreviveria a um redownload.
+    ja_tem = [
+        uf
+        for uf in ufs
+        if os.path.exists(
+            os.path.join(dir_saida, f"microdados_vinculos_{args.year}_{uf}.csv")
+        )
+    ]
+    if ja_tem and not args.force:
+        log("")
+        log("!" * 78)
+        log(f"{len(ja_tem)} de {len(ufs)} UF(s) JÁ TÊM arquivo de {args.year} "
+            "nessa pasta e serão PULADAS:")
+        log(f"  {', '.join(sorted(ja_tem))}")
+        log("")
+        log("  Se a intenção é CONSERTAR a leva de 2023 (a que veio sem")
+        log("  administração pública direta), rode de novo com --force —")
+        log("  senão o script não baixa nada e os arquivos ruins continuam.")
+        log("!" * 78)
+        log("")
+
     log("-" * 78)
 
     t0 = time.time()
