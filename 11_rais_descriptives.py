@@ -34,7 +34,7 @@
 #       + (opcional, ligado por padrão) vinculo_ativo_3112 == 1, ou seja, o
 #         vínculo estava ativo em 31/12 — isso mede o ESTOQUE de empregos no
 #         fim do ano em vez de contar todo vínculo que existiu em algum momento
-#         de 2023. Sem esse filtro, o setor privado (que tem muito mais
+#         de 2022. Sem esse filtro, o setor privado (que tem muito mais
 #         rotatividade) aparece inflado. Veja SOMENTE_VINCULOS_ATIVOS_3112.
 #
 # PÚBLICO vs PRIVADO (natureza_juridica, ver meudicionario.csv)
@@ -134,7 +134,7 @@ NOME_AGREGADO = CFG["nome_agregado"]
 IDIOMAS = ["pt", "en"]
 
 # Se True, mantém só vínculos ativos em 31/12 (estoque de fim de ano).
-# Se False, conta todo vínculo formal observado em 2023 (fluxo).
+# Se False, conta todo vínculo formal observado em 2022 (fluxo).
 SOMENTE_VINCULOS_ATIVOS_3112 = True
 
 # RGIs com menos de N_MINIMO vínculos na amostra saem do coroplético (ficam
@@ -212,7 +212,7 @@ DIR_CLEANED = os.path.join(DIR_PNADC, "Cleaned Data")
 DIR_OUTPUT = os.path.join(DIR_PNADC, "Output")
 DIR_FIGURES = os.path.join(DIR_OUTPUT, "Figures")
 
-ARQ_RAIS = os.path.join(DIR_RAIS, "microdados_vinculos_2023_{uf}.csv")
+ARQ_RAIS = os.path.join(DIR_RAIS, "microdados_vinculos_2022_{uf}.csv")
 ARQ_CHAVE_RGI = os.path.join(
     DIR_RAIS, "regioes_geograficas_composicao_por_municipios_2017_20180911.csv"
 )
@@ -223,7 +223,7 @@ ARQ_POLIGONOS = os.path.join(DIR_RAIS, "br_geobr_mapas_regiao_imediata.csv")
 SUFIXO_PAINEL = f"{len(UFS)}ufs" if len(UFS) > 1 else UFS[0]
 ARQ_PAINEL = os.path.join(
     DIR_CLEANED,
-    f"rais2023_superior_fulltime_{SUFIXO_PAINEL}"
+    f"rais2022_superior_fulltime_{SUFIXO_PAINEL}"
     f"{'_ativos3112' if SOMENTE_VINCULOS_ATIVOS_3112 else '_todos'}.parquet",
 )
 
@@ -278,9 +278,9 @@ TEXTOS = {
         "rotulo_barra": "% do emprego no setor público",
         "total": "{nome} (total)",
         "sep_milhar": ".",
-        "fonte": "Fonte: RAIS 2023 (vínculos), IBGE (Regiões Geográficas Imediatas, 2017). ",
-        "nota_estoque": "Vínculos ativos em 31/12/2023.",
-        "nota_fluxo": "Todos os vínculos observados em 2023.",
+        "fonte": "Fonte: RAIS 2022 (vínculos), IBGE (Regiões Geográficas Imediatas, 2017). ",
+        "nota_estoque": "Vínculos ativos em 31/12/2022.",
+        "nota_fluxo": "Todos os vínculos observados em 2022.",
         "nota_minimo": " RGIs com menos de {n} vínculos na amostra ficam em cinza.",
         "leg_acima": "Emprego público ≥ {nome} ({v:.0f}%)",
         "leg_abaixo": "Emprego público < {nome}",
@@ -297,11 +297,11 @@ TEXTOS = {
         "total": "{nome} (total)",
         "sep_milhar": ",",
         "fonte": (
-            "Source: RAIS 2023 (employment records), IBGE (Immediate Geographic "
+            "Source: RAIS 2022 (employment records), IBGE (Immediate Geographic "
             "Regions, 2017). "
         ),
-        "nota_estoque": "Jobs active on Dec 31, 2023.",
-        "nota_fluxo": "All jobs observed during 2023.",
+        "nota_estoque": "Jobs active on Dec 31, 2022.",
+        "nota_fluxo": "All jobs observed during 2022.",
         "nota_minimo": " RGIs with fewer than {n} jobs in the sample are shown in grey.",
         "leg_acima": "Public employment ≥ {nome} ({v:.0f}%)",
         "leg_abaixo": "Public employment < {nome}",
@@ -337,7 +337,7 @@ ETAPAS = [
     ("superior", "com ensino superior completo ou mais"),
     ("integral", "em tempo integral (≥36h)"),
     ("nj_def", "com natureza jurídica definida"),
-    ("ativos", "ativos em 31/12/2023"),
+    ("ativos", "ativos em 31/12/2022"),
     ("com_mun", "com município de trabalho"),
 ]
 
@@ -1001,7 +1001,7 @@ def main():
 
     # salva a tabela completa pra reaproveitar sem reler o painel
     csv_saida = os.path.join(
-        DIR_OUTPUT, f"rais2023_publico_privado_rgi_{SUFIXO_PAINEL}.csv"
+        DIR_OUTPUT, f"rais2022_publico_privado_rgi_{SUFIXO_PAINEL}.csv"
     )
     por_rgi.to_csv(csv_saida, index=False)
     print(f"\n   {len(por_rgi)} RGIs na tabela -> {csv_saida}")
@@ -1017,7 +1017,7 @@ def main():
                 RGIS_DESTAQUE,
                 os.path.join(
                     DIR_FIGURES,
-                    f"rais2023_mapa_publico_privado_{SUFIXO_PAINEL}"
+                    f"rais2022_mapa_publico_privado_{SUFIXO_PAINEL}"
                     f"_{SUFIXO_VARIANTE[variante]}_{idioma}",
                 ),
                 idioma,
