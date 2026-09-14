@@ -10,12 +10,22 @@
 #   Saída: um mapa das RGIs (coroplético pela participação do emprego público)
 #   com pizzas saindo das RGIs destacadas, mais uma pizza do agregado.
 #
-# ESTA VERSÃO É O TESTE COM O ACRE (destaque: Rio Branco), antes de escalar
-#   para o Brasil inteiro com Belém, Manaus, Juazeiro do Norte, Recife,
-#   Vitória da Conquista, Rio de Janeiro, Itaperuna, São Paulo, Sinop,
-#   Brasília e Blumenau.
+# DUAS RODADAS (constante RODADA, logo abaixo)
+#   "AC" = teste rápido com o Acre, destacando Rio Branco.
+#   "BR" = Brasil inteiro (27 UFs), destacando Belém, Manaus, Juazeiro do
+#          Norte, Recife, Vitória da Conquista, Rio de Janeiro, Itaperuna,
+#          São Paulo, Sinop, Brasília (RGI "Distrito Federal") e Blumenau.
 #
-# RESTRIÇÕES DA AMOSTRA (todas aplicadas em `carrega_rais`)
+# COMO RODA EM DUAS ETAPAS
+#   1. PAINEL: lê os CSVs da RAIS um por UF, EM PEDAÇOS (chunks), já jogando
+#      fora as colunas e as linhas que não interessam, e grava o resultado
+#      empilhado num único .parquet. Essa etapa é a caríssima (~18 GB de CSV)
+#      e só roda uma vez — depois o parquet é reaproveitado.
+#   2. FIGURA: lê o parquet, agrega por RGI e desenha. Roda em segundos.
+#   Para forçar a reconstrução do painel: FORCAR_PAINEL = True, ou apague o
+#   .parquet, ou rode com o argumento `--rebuild`.
+#
+# RESTRIÇÕES DA AMOSTRA (todas aplicadas em `aplica_filtros`)
 #   (1) tempo integral : quantidade_horas_contratadas >= 36, != 99, não missing
 #   (2) emprego formal : é o universo da RAIS (vínculos formais declarados)
 #   (3) ensino superior: grau_instrucao_apos_2005 in (9, 10, 11)
@@ -33,72 +43,172 @@
 #             + 2194, 2208, 2275 (entidades binacionais)
 #   privado : todo o resto
 #
-# Caminhos são todos RELATIVOS a este arquivo (nada hard-coded).
+# Caminhos são todos RELATIVOS a este arquivo (nada hard-coded). Num cluster,
+# a variável de ambiente RAIS_PROJECT_ROOT pode apontar para outra raiz.
 # ============================================================================
 
 import os
 import re
+import sys
 
 import matplotlib as mpl
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.patches import ConnectionPatch, Polygon as MplPolygon
+from matplotlib.patches import ConnectionPatch, Patch, Polygon as MplPolygon
 
 # ----------------------------------------------------------------------------
 # 0) CONFIGURAÇÃO DA RODADA
 # ----------------------------------------------------------------------------
-# UFs a carregar da RAIS. Para escalar, troque por ["AC", "AM", "PA", ...] ou
-# pela lista completa das 27 UFs.
-UFS = ["AC"]
+RODADA = "BR"  # "AC" (teste) ou "BR" (Brasil inteiro)
 
-# RGIs a destacar com pizza própria (pelo código cod_rgi de 6 dígitos).
-# 120001 = Rio Branco. Os nomes vêm da própria chave de municípios.
-RGIS_DESTAQUE = [120001]
+UFS_BRASIL = [
+    "AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS",
+    "MT", "PA", "PB", "PE", "PI", "PR", "RJ", "RN", "RO", "RR", "RS", "SC",
+    "SE", "SP", "TO",
+]
 
-# Rótulo do agregado mostrado na última pizza, em cada idioma.
-NOME_AGREGADO = {"pt": "Acre", "en": "Acre"}
+# Códigos cod_rgi (6 dígitos) conferidos contra a chave do IBGE.
+RGIS_BRASIL = [
+    150001,  # Belém
+    130001,  # Manaus
+    230011,  # Juazeiro do Norte
+    260001,  # Recife
+    290011,  # Vitória da Conquista
+    330001,  # Rio de Janeiro
+    330011,  # Itaperuna
+    350001,  # São Paulo
+    510007,  # Sinop
+    530001,  # Distrito Federal (= Brasília)
+    420019,  # Blumenau
+]
+
+# Nomes de exibição que sobrescrevem o nome_rgi do IBGE, por idioma.
+# A RGI de Brasília leva o nome da UF ("Distrito Federal") na base do IBGE.
+NOMES_EXIBICAO = {
+    530001: {"pt": "Brasília (DF)", "en": "Brasília (DF)"},
+}
+
+CONFIGS = {
+    "AC": {
+        "ufs": ["AC"],
+        "destaques": [120001],  # Rio Branco
+        "nome_agregado": {"pt": "Acre", "en": "Acre"},
+        "fig": (13.5, 7.6),
+        # posição da pizza do agregado: None = entra na coluna com as demais
+        "pos_total": None,
+        "lado_rotulo_total": "dir",
+        # retângulo da barra de cor (ou da legenda), em coordenadas de figura
+        "pos_barra": (0.05, 0.10, 0.20, 0.018),
+        # RGI usada como régua na variante "vs_referencia"
+        "rgi_referencia": 120001,  # Rio Branco
+        # empurra uma coluna para cima (+) ou para baixo (-), em fração de
+        # figura, para desviar linha-guia que passe em cima de outra pizza
+        "desloca_coluna": {"esq": 0.0, "dir": 0.0},
+    },
+    "BR": {
+        "ufs": UFS_BRASIL,
+        "destaques": RGIS_BRASIL,
+        "nome_agregado": {"pt": "Brasil", "en": "Brazil"},
+        "fig": (20.0, 15.0),
+        # o Brasil deixa o canto sudoeste do mapa vazio: a pizza do total
+        # (maior que as outras) mora ali. (x_centro, y_centro, lado)
+        "pos_total": (0.325, 0.205, 0.155),
+        # o rótulo aponta para o canto vazio, à esquerda, longe do mapa
+        "lado_rotulo_total": "esq",
+        "pos_barra": (0.255, 0.068, 0.165, 0.015),
+        "rgi_referencia": 530001,  # Brasília (Distrito Federal)
+        # a coluna da esquerda sobe: assim a linha-guia de Belém passa ACIMA
+        # da pizza de Manaus em vez de cortá-la pelo meio
+        "desloca_coluna": {"esq": 0.115, "dir": 0.0},
+    },
+}
+
+CFG = CONFIGS[RODADA]
+UFS = CFG["ufs"]
+RGIS_DESTAQUE = CFG["destaques"]
+NOME_AGREGADO = CFG["nome_agregado"]
 
 # Idiomas a gerar. Cada um vira um arquivo com sufixo _pt / _en.
 IDIOMAS = ["pt", "en"]
-
-# --- para escalar para o Brasil (códigos já conferidos na chave do IBGE) ---
-# UFS = ["AC","AL","AM","AP","BA","CE","DF","ES","GO","MA","MG","MS","MT","PA",
-#        "PB","PE","PI","PR","RJ","RN","RO","RR","RS","SC","SE","SP","TO"]
-# NOME_AGREGADO = {"pt": "Brasil", "en": "Brazil"}
-# RGIS_DESTAQUE = [
-#     150001,  # Belém
-#     130001,  # Manaus
-#     230011,  # Juazeiro do Norte
-#     260001,  # Recife
-#     290011,  # Vitória da Conquista
-#     330001,  # Rio de Janeiro
-#     330011,  # Itaperuna
-#     350001,  # São Paulo
-#     510007,  # Sinop
-#     530001,  # Distrito Federal (= Brasília; a RGI leva o nome da UF)
-#     420019,  # Blumenau
-# ]
-# ATENÇÃO: com 11 destaques a coluna única de pizzas à direita não cabe —
-# `monta_figura` precisa distribuir as pizzas em volta do mapa antes de rodar
-# o Brasil. As demais etapas (leitura, filtros, merge, agregação) escalam
-# direto; só o arranjo da figura muda.
 
 # Se True, mantém só vínculos ativos em 31/12 (estoque de fim de ano).
 # Se False, conta todo vínculo formal observado em 2023 (fluxo).
 SOMENTE_VINCULOS_ATIVOS_3112 = True
 
+# RGIs com menos de N_MINIMO vínculos na amostra saem do coroplético (ficam
+# cinza de "sem dado"). Sem isso, uma RGI com n = 1 pinta 0% ou 100% e domina
+# visualmente a escala de cor — o mapa nacional tem muitas RGIs minúsculas.
+# Elas continuam no CSV de saída. Ponha 0 para desligar.
+N_MINIMO = 25
+
+# A escala de cor é cortada nesses percentis para não ser comprimida por
+# poucas RGIs extremas (prefeitura como único empregador formal => ~80%
+# público). A barra de cor ganha setas nas pontas indicando o corte.
+PERCENTIS_COR = (5, 95)
+
+# Fatia com menos de LIMIAR_DENTRO % leva o rótulo FORA da pizza. Como as duas
+# fatias somam 100, no máximo uma delas sai — e é sempre a minoritária, que é
+# justamente a que não tem espaço interno para o texto.
+LIMIAR_DENTRO = 45
+
+# Em qual coluna cada RGI destacada entra ("esq" / "dir"). O que não estiver
+# aqui é distribuído automaticamente (oeste à esquerda, leste à direita).
+# Serve para ajustar à mão quando uma linha-guia fica cruzando o mapa.
+LADO_DESTAQUE = {
+    # esquerda: só as do oeste/norte, que é onde o mapa tem espaço vazio
+    150001: "esq",  # Belém
+    130001: "esq",  # Manaus
+    510007: "esq",  # Sinop
+    530001: "esq",  # Brasília (DF)
+    # direita: todo o litoral/sudeste, de norte para sul
+    230011: "dir",  # Juazeiro do Norte
+    260001: "dir",  # Recife
+    290011: "dir",  # Vitória da Conquista
+    330011: "dir",  # Itaperuna
+    330001: "dir",  # Rio de Janeiro
+    350001: "dir",  # São Paulo
+    420019: "dir",  # Blumenau
+}
+
+# Como o mapa por trás das pizzas é pintado. Uma figura é gerada para cada:
+#   "gradiente"     : coroplético contínuo pela participação do emprego público
+#   "nenhum"        : sem cor nenhuma — só o contorno das RGIs destacadas
+#   "vs_referencia" : duas classes, acima ou abaixo da RGI de referência
+VARIANTES_MAPA = ["gradiente", "nenhum", "vs_referencia"]
+
+SUFIXO_VARIANTE = {
+    "gradiente": "gradiente",
+    "nenhum": "sem_cor",
+    "vs_referencia": "vs_referencia",
+}
+
+# cores das duas classes da variante "vs_referencia": o azul continua
+# significando "público", igual nas pizzas e no gradiente
+COR_ACIMA = "#2a78d6"
+COR_ABAIXO = "#dbe7f7"
+
+# Linhas lidas por pedaço na construção do painel. Menor = menos memória.
+TAMANHO_CHUNK = 2_000_000
+
+# Reconstrói o painel mesmo que o .parquet já exista.
+FORCAR_PAINEL = False
+
 # ----------------------------------------------------------------------------
 # 1) CAMINHOS — relativos a ESTE script
 #    .../CONCURSOS/Data/PNADC/Code/11_rais_descriptives.py   (este arquivo)
 #    .../CONCURSOS/Data/RAIS_Workers/Raw Data/                (insumos)
-#    .../CONCURSOS/Data/PNADC/Output/                         (saída)
+#    .../CONCURSOS/Data/PNADC/Cleaned Data/                   (painel .parquet)
+#    .../CONCURSOS/Data/PNADC/Output/Figures/                 (figuras)
 # ----------------------------------------------------------------------------
 AQUI = os.path.dirname(os.path.abspath(__file__))
-DIR_PNADC = os.path.normpath(os.path.join(AQUI, ".."))
+DIR_PNADC = os.environ.get("RAIS_PROJECT_ROOT") or os.path.normpath(
+    os.path.join(AQUI, "..")
+)
 DIR_DATA = os.path.normpath(os.path.join(DIR_PNADC, ".."))
 DIR_RAIS = os.path.join(DIR_DATA, "RAIS_Workers", "Raw Data")
+DIR_CLEANED = os.path.join(DIR_PNADC, "Cleaned Data")
 DIR_OUTPUT = os.path.join(DIR_PNADC, "Output")
 DIR_FIGURES = os.path.join(DIR_OUTPUT, "Figures")
 
@@ -108,8 +218,17 @@ ARQ_CHAVE_RGI = os.path.join(
 )
 ARQ_POLIGONOS = os.path.join(DIR_RAIS, "br_geobr_mapas_regiao_imediata.csv")
 
-os.makedirs(DIR_OUTPUT, exist_ok=True)
-os.makedirs(DIR_FIGURES, exist_ok=True)
+# o nome do painel carrega as UFs e o filtro de estoque, pra duas rodadas
+# diferentes nunca se sobrescreverem
+SUFIXO_PAINEL = f"{len(UFS)}ufs" if len(UFS) > 1 else UFS[0]
+ARQ_PAINEL = os.path.join(
+    DIR_CLEANED,
+    f"rais2023_superior_fulltime_{SUFIXO_PAINEL}"
+    f"{'_ativos3112' if SOMENTE_VINCULOS_ATIVOS_3112 else '_todos'}.parquet",
+)
+
+for _d in (DIR_CLEANED, DIR_OUTPUT, DIR_FIGURES):
+    os.makedirs(_d, exist_ok=True)
 
 # ----------------------------------------------------------------------------
 # 2) PALETA E ESTILO
@@ -120,6 +239,7 @@ os.makedirs(DIR_FIGURES, exist_ok=True)
 COR_PUBLICO = "#2a78d6"
 COR_PRIVADO = "#eb6834"
 SUPERFICIE = "#fcfcfb"
+SEM_DADO = "#e6e5e0"
 TINTA_FORTE = "#0b0b0b"
 TINTA_MEDIA = "#52514e"
 TINTA_FRACA = "#8a8983"
@@ -155,14 +275,15 @@ TEXTOS = {
         ),
         "publico": "Público",
         "privado": "Privado",
-        "leg_publico": "Setor público",
-        "leg_privado": "Setor privado",
         "rotulo_barra": "% do emprego no setor público",
         "total": "{nome} (total)",
         "sep_milhar": ".",
         "fonte": "Fonte: RAIS 2023 (vínculos), IBGE (Regiões Geográficas Imediatas, 2017). ",
         "nota_estoque": "Vínculos ativos em 31/12/2023.",
         "nota_fluxo": "Todos os vínculos observados em 2023.",
+        "nota_minimo": " RGIs com menos de {n} vínculos na amostra ficam em cinza.",
+        "leg_acima": "Emprego público ≥ {nome} ({v:.0f}%)",
+        "leg_abaixo": "Emprego público < {nome}",
     },
     "en": {
         "titulo": "Formal employment of college graduates: public or private",
@@ -172,8 +293,6 @@ TEXTOS = {
         ),
         "publico": "Public",
         "privado": "Private",
-        "leg_publico": "Public sector",
-        "leg_privado": "Private sector",
         "rotulo_barra": "% of employment in the public sector",
         "total": "{nome} (total)",
         "sep_milhar": ",",
@@ -183,12 +302,15 @@ TEXTOS = {
         ),
         "nota_estoque": "Jobs active on Dec 31, 2023.",
         "nota_fluxo": "All jobs observed during 2023.",
+        "nota_minimo": " RGIs with fewer than {n} jobs in the sample are shown in grey.",
+        "leg_acima": "Public employment ≥ {nome} ({v:.0f}%)",
+        "leg_abaixo": "Public employment < {nome}",
     },
 }
 
 
 # ----------------------------------------------------------------------------
-# 3) LEITURA E FILTRAGEM DA RAIS
+# 3) PAINEL — lê a RAIS em pedaços, filtra, empilha as UFs e grava .parquet
 # ----------------------------------------------------------------------------
 COLUNAS_RAIS = [
     "sigla_uf",
@@ -199,6 +321,9 @@ COLUNAS_RAIS = [
     "vinculo_ativo_3112",
 ]
 
+# colunas que o painel guarda (as outras só servem para filtrar)
+COLUNAS_PAINEL = ["sigla_uf", "id_municipio_trabalho", "natureza_juridica"]
+
 # códigos de natureza_juridica que são públicos apesar de > 2038 (binacionais)
 NJ_PUBLICO_EXTRA = {2194, 2208, 2275}
 NJ_CORTE_PUBLICO = 2038
@@ -206,47 +331,120 @@ NJ_INDEFINIDO = 9999
 GRAU_SUPERIOR = {9, 10, 11}  # superior completo, mestrado, doutorado
 
 
-def carrega_rais(ufs):
-    """Lê as UFs pedidas, aplica as restrições da amostra e classifica o setor.
+# etapas do funil, na ordem em que `aplica_filtros` as aplica
+ETAPAS = [
+    ("lidos", "vínculos lidos"),
+    ("superior", "com ensino superior completo ou mais"),
+    ("integral", "em tempo integral (≥36h)"),
+    ("nj_def", "com natureza jurídica definida"),
+    ("ativos", "ativos em 31/12/2023"),
+    ("com_mun", "com município de trabalho"),
+]
 
-    Devolve um DataFrame de vínculos com a coluna booleana `publico`.
+
+def aplica_filtros(d, funil):
+    """Aplica as restrições da amostra a um pedaço da RAIS.
+
+    `funil` é um dicionário que acumula a contagem de cada etapa ao longo dos
+    pedaços, para o funil poder ser impresso por UF no fim da leitura.
+    """
+    funil["lidos"] += len(d)
+
+    # (3) ensino superior
+    d = d[d["grau_instrucao_apos_2005"].isin(GRAU_SUPERIOR)]
+    funil["superior"] += len(d)
+
+    # (1) tempo integral: >= 36h, 99 é código de inválido, e sem missing
+    horas = d["quantidade_horas_contratadas"]
+    d = d[horas.notna() & (horas != 99) & (horas >= 36)]
+    funil["integral"] += len(d)
+
+    # natureza jurídica indefinida (ou ausente) não pode ser classificada.
+    # O notna() importa ao escalar: basta uma UF trazer o campo vazio para a
+    # coluna virar float e o astype("int16") do painel quebrar no fim.
+    nj = d["natureza_juridica"]
+    d = d[nj.notna() & (nj != NJ_INDEFINIDO)]
+    funil["nj_def"] += len(d)
+
+    # estoque em 31/12 (opcional)
+    if SOMENTE_VINCULOS_ATIVOS_3112:
+        d = d[d["vinculo_ativo_3112"] == 1]
+    funil["ativos"] += len(d)
+
+    # município de trabalho é a chave do merge; sem ele não há como alocar
+    d = d[d["id_municipio_trabalho"].notna()]
+    funil["com_mun"] += len(d)
+
+    return d[COLUNAS_PAINEL]
+
+
+def constroi_painel(ufs, caminho_saida):
+    """Empilha as UFs já filtradas num único parquet enxuto.
+
+    Lê em pedaços de TAMANHO_CHUNK linhas e descarta o que não interessa
+    antes de acumular, então o pico de memória não depende do tamanho do CSV
+    (SP sozinho tem 5,4 GB).
     """
     partes = []
     for uf in ufs:
         caminho = ARQ_RAIS.format(uf=uf)
-        print(f"  lendo {os.path.basename(caminho)} ...", flush=True)
-        bruto = pd.read_csv(caminho, usecols=COLUNAS_RAIS)
-        n0 = len(bruto)
+        if not os.path.exists(caminho):
+            print(f"  ATENÇÃO: {os.path.basename(caminho)} não existe — pulando")
+            continue
 
-        # (3) ensino superior
-        d = bruto[bruto["grau_instrucao_apos_2005"].isin(GRAU_SUPERIOR)]
+        print(f"  {uf}: lendo {os.path.basename(caminho)} ...", flush=True)
+        funil = {chave: 0 for chave, _ in ETAPAS}
+        pedacos = []
+        for pedaco in pd.read_csv(
+            caminho, usecols=COLUNAS_RAIS, chunksize=TAMANHO_CHUNK
+        ):
+            filtrado = aplica_filtros(pedaco, funil)
+            if len(filtrado):
+                pedacos.append(filtrado)
 
-        # (1) tempo integral: >= 36h, 99 é código de inválido, e sem missing
-        horas = d["quantidade_horas_contratadas"]
-        d = d[horas.notna() & (horas != 99) & (horas >= 36)]
+        # funil de cada UF: dá pra ver em qual restrição a amostra encolhe
+        for chave, rotulo in ETAPAS:
+            print(f"      {funil[chave]:>12,}  {rotulo}", flush=True)
 
-        # natureza jurídica indefinida não pode ser classificada
-        d = d[d["natureza_juridica"] != NJ_INDEFINIDO]
+        if pedacos:
+            partes.append(pd.concat(pedacos, ignore_index=True))
 
-        # estoque em 31/12 (opcional)
-        if SOMENTE_VINCULOS_ATIVOS_3112:
-            d = d[d["vinculo_ativo_3112"] == 1]
+    if not partes:
+        raise SystemExit("Nenhum arquivo da RAIS foi lido — confira DIR_RAIS.")
 
-        # município de trabalho é a chave do merge; sem ele não há como alocar
-        d = d[d["id_municipio_trabalho"].notna()]
+    painel = pd.concat(partes, ignore_index=True)
 
-        print(f"    {n0:,} vínculos -> {len(d):,} após as restrições")
-        partes.append(d)
+    # tipos enxutos: o painel inteiro fica pequeno o bastante pra caber na RAM
+    painel["id_municipio_trabalho"] = painel["id_municipio_trabalho"].astype("int32")
+    painel["natureza_juridica"] = painel["natureza_juridica"].astype("int16")
+    painel["sigla_uf"] = painel["sigla_uf"].astype("category")
 
-    rais = pd.concat(partes, ignore_index=True)
+    painel.to_parquet(caminho_saida, index=False)
+    mb = os.path.getsize(caminho_saida) / 1e6
+    print(f"  painel gravado: {len(painel):,} linhas, {mb:.1f} MB")
+    print(f"  {caminho_saida}")
+    return painel
 
-    nj = rais["natureza_juridica"]
-    rais["publico"] = (nj <= NJ_CORTE_PUBLICO) | nj.isin(NJ_PUBLICO_EXTRA)
-    rais["id_municipio_trabalho"] = rais["id_municipio_trabalho"].astype("int64")
-    return rais
+
+def carrega_painel(ufs, refazer=False):
+    """Devolve o painel, construindo-o se necessário, com `publico` marcado."""
+    if refazer or FORCAR_PAINEL or not os.path.exists(ARQ_PAINEL):
+        print("  construindo o painel a partir dos CSVs da RAIS ...")
+        painel = constroi_painel(ufs, ARQ_PAINEL)
+    else:
+        print(f"  reaproveitando o painel já existente ({ARQ_PAINEL})")
+        painel = pd.read_parquet(ARQ_PAINEL)
+        print(f"  {len(painel):,} linhas")
+
+    nj = painel["natureza_juridica"]
+    painel["publico"] = (nj <= NJ_CORTE_PUBLICO) | nj.isin(NJ_PUBLICO_EXTRA)
+    return painel
 
 
-def agrega_por_rgi(rais, rgis_validas=None):
+# ----------------------------------------------------------------------------
+# 4) AGREGAÇÃO POR RGI
+# ----------------------------------------------------------------------------
+def agrega_por_rgi(painel, rgis_validas=None):
     """Cola a chave município->RGI e agrega a composição público/privado.
 
     `rgis_validas` restringe o resultado às RGIs mapeadas. Isso importa porque
@@ -261,7 +459,7 @@ def agrega_por_rgi(rais, rgis_validas=None):
     chave = pd.read_csv(ARQ_CHAVE_RGI, encoding="utf-8-sig")
     chave = chave[["CD_GEOCODI", "cod_rgi", "nome_rgi"]].drop_duplicates("CD_GEOCODI")
 
-    junto = rais.merge(
+    junto = painel.merge(
         chave,
         left_on="id_municipio_trabalho",
         right_on="CD_GEOCODI",
@@ -307,7 +505,7 @@ def agrega_por_rgi(rais, rgis_validas=None):
 
 
 # ----------------------------------------------------------------------------
-# 4) POLÍGONOS — o CSV traz WKT (POLYGON / MULTIPOLYGON) na coluna `geometria`.
+# 5) POLÍGONOS — o CSV traz WKT (POLYGON / MULTIPOLYGON) na coluna `geometria`.
 #    Não há geopandas nesta máquina, então extraímos os anéis com regex e
 #    desenhamos cada um com matplotlib. (Buracos não são tratados; as RGIs
 #    deste arquivo não têm — os anéis extras são ilhas.)
@@ -350,25 +548,47 @@ def carrega_poligonos(ufs):
 
 
 # ----------------------------------------------------------------------------
-# 5) DESENHO
+# 6) DESENHO
 # ----------------------------------------------------------------------------
-def desenha_mapa(ax, geo, por_rgi, destaques):
-    """Coroplético das RGIs pela participação do emprego público."""
-    shares = por_rgi.set_index("cod_rgi")["share_publico"].to_dict()
+def desenha_mapa(ax, geo, shares, destaques, n_rgis, variante, share_ref=None):
+    """Desenha as RGIs. `variante` decide como o interior é pintado.
 
-    valores = [v for v in shares.values() if np.isfinite(v)]
-    vmin, vmax = (min(valores), max(valores)) if valores else (0, 100)
-    if vmax - vmin < 1e-9:  # evita norma degenerada com uma única RGI
-        vmin, vmax = vmin - 1, vmax + 1
-    norma = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+    "gradiente"     -> coroplético contínuo (devolve a norma, para a barra)
+    "nenhum"        -> tudo num cinza neutro, sem codificar nada
+    "vs_referencia" -> duas classes, acima/abaixo de `share_ref`
+
+    Devolve a norma da escala contínua, ou None nas outras variantes.
+    """
+    norma = None
+    if variante == "gradiente":
+        valores = np.array([v for v in shares.values() if np.isfinite(v)])
+        if len(valores):
+            vmin, vmax = np.percentile(valores, PERCENTIS_COR)
+        else:
+            vmin, vmax = 0.0, 100.0
+        if vmax - vmin < 1e-9:  # evita norma degenerada com uma única RGI
+            vmin, vmax = vmin - 1, vmax + 1
+        norma = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=True)
+
+    # com 510 RGIs a borda branca tem de ser fina, senão o mapa vira renda
+    espessura = 0.8 if n_rgis <= 30 else 0.22
+    contorno = 2.0 if n_rgis <= 30 else 1.6
+
+    def cor_da_rgi(cod):
+        if variante == "nenhum":
+            return SEM_DADO
+        share = shares.get(cod, np.nan)
+        if not np.isfinite(share):  # RGI sem dado suficiente fica cinza claro
+            return SEM_DADO
+        if variante == "gradiente":
+            return RAMPA_PUBLICO(norma(share))
+        # vs_referencia: só duas classes
+        return COR_ACIMA if share >= share_ref else COR_ABAIXO
 
     todos_x, todos_y = [], []
     for _, linha in geo.iterrows():
         cod = int(linha["id_regiao_imediata"])
-        share = shares.get(cod, np.nan)
-        # RGI sem nenhum vínculo na amostra fica cinza claro (sem dado)
-        cor = "#e6e5e0" if not np.isfinite(share) else RAMPA_PUBLICO(norma(share))
-        eh_destaque = cod in destaques
+        cor = cor_da_rgi(cod)
 
         for anel in linha["aneis"]:
             ax.add_patch(
@@ -377,31 +597,37 @@ def desenha_mapa(ax, geo, por_rgi, destaques):
                     closed=True,
                     facecolor=cor,
                     edgecolor=SUPERFICIE,
-                    linewidth=0.8,
+                    linewidth=espessura,
                     zorder=2,
                 )
             )
             todos_x.append(anel[:, 0])
             todos_y.append(anel[:, 1])
 
-        # contorno grosso só nas RGIs destacadas, por cima de todo o resto
-        if eh_destaque:
+        # contorno grosso só nas RGIs destacadas, por cima de todo o resto.
+        # Vai em duas passadas: um halo claro embaixo e a linha escura em
+        # cima, senão o contorno desaparece sobre as RGIs de azul escuro.
+        if cod in destaques:
             for anel in linha["aneis"]:
-                ax.add_patch(
-                    MplPolygon(
-                        anel,
-                        closed=True,
-                        facecolor="none",
-                        edgecolor=TINTA_FORTE,
-                        linewidth=2.0,
-                        zorder=4,
+                for cor_linha, esp, z in (
+                    (SUPERFICIE, contorno * 2.2, 4),
+                    (TINTA_FORTE, contorno, 5),
+                ):
+                    ax.add_patch(
+                        MplPolygon(
+                            anel,
+                            closed=True,
+                            facecolor="none",
+                            edgecolor=cor_linha,
+                            linewidth=esp,
+                            zorder=z,
+                        )
                     )
-                )
 
     x = np.concatenate(todos_x)
     y = np.concatenate(todos_y)
     folga_x = 0.03 * (x.max() - x.min())
-    folga_y = 0.06 * (y.max() - y.min())
+    folga_y = 0.04 * (y.max() - y.min())
     ax.set_xlim(x.min() - folga_x, x.max() + folga_x)
     ax.set_ylim(y.min() - folga_y, y.max() + folga_y)
 
@@ -412,20 +638,27 @@ def desenha_mapa(ax, geo, por_rgi, destaques):
     return norma
 
 
-def desenha_pizza(ax, share_publico, share_privado, titulo, n, txt):
-    """Uma pizza de duas fatias: público vs privado, com rótulos diretos."""
+def desenha_pizza(
+    ax, share_publico, share_privado, titulo, n, txt, escala=1.0, lado_rotulo="dir"
+):
+    """Uma pizza de duas fatias: público vs privado, com rótulos diretos.
+
+    `lado_rotulo` decide para que lado aponta a fatia pública (que é fina e
+    leva rótulo externo): "dir" a põe às 3h subindo, "esq" às 9h subindo.
+    Nas colunas laterais o rótulo sempre aponta para FORA do mapa, senão ele
+    cai em cima da linha-guia ou do próprio mapa.
+    """
     ax.set_facecolor(SUPERFICIE)
-    # começa às 3h e sobe: a fatia pública (quase sempre a menor) fica à
-    # direita, num ângulo raso, onde o rótulo externo não bate no título
     fatias, _ = ax.pie(
         [share_publico, share_privado],
         colors=[COR_PUBLICO, COR_PRIVADO],
-        startangle=0,
-        counterclock=True,
+        startangle=0 if lado_rotulo == "dir" else 180,
+        counterclock=(lado_rotulo == "dir"),
         # o vão de 2px na cor da superfície separa as fatias sem linha preta
         wedgeprops={"edgecolor": SUPERFICIE, "linewidth": 2.0},
     )
 
+    fonte_rotulo = 10.5 * escala
     # rótulo direto: o número vai na fatia se ela couber, senão vai pra fora
     for fatia, valor, rotulo in zip(
         fatias,
@@ -434,14 +667,14 @@ def desenha_pizza(ax, share_publico, share_privado, titulo, n, txt):
     ):
         meio = np.radians((fatia.theta1 + fatia.theta2) / 2)
         cos_m, sin_m = np.cos(meio), np.sin(meio)
-        if valor >= 18:
+        if valor >= LIMIAR_DENTRO:
             ax.text(
-                0.60 * cos_m,
-                0.60 * sin_m,
+                0.55 * cos_m,
+                0.55 * sin_m,
                 f"{rotulo}\n{valor:.0f}%",
                 ha="center",
                 va="center",
-                fontsize=10.5,
+                fontsize=fonte_rotulo,
                 color="#ffffff",
                 fontweight="bold",
                 linespacing=1.25,
@@ -454,7 +687,7 @@ def desenha_pizza(ax, share_publico, share_privado, titulo, n, txt):
                 xytext=(1.30 * cos_m, 1.30 * sin_m),
                 ha="left" if cos_m >= 0 else "right",
                 va="center",
-                fontsize=10.5,
+                fontsize=fonte_rotulo,
                 color=TINTA_FORTE,
                 fontweight="bold",
                 arrowprops={
@@ -466,182 +699,330 @@ def desenha_pizza(ax, share_publico, share_privado, titulo, n, txt):
                 },
             )
 
-    ax.set_title(titulo, fontsize=12.5, fontweight="bold", color=TINTA_FORTE, pad=8)
+    ax.set_title(
+        titulo,
+        fontsize=12.5 * escala,
+        fontweight="bold",
+        color=TINTA_FORTE,
+        pad=8 * escala,
+    )
     ax.text(
         0,
-        -1.42,
+        -1.30,
         f"n = {n:,}".replace(",", txt["sep_milhar"]),
         ha="center",
         va="top",
-        fontsize=9,
+        fontsize=9 * escala,
         color=TINTA_FRACA,
         transform=ax.transData,
     )
     ax.set_aspect("equal")
 
 
-def monta_figura(geo, por_rgi, agregado, destaques, arquivo, idioma):
-    """Mapa à esquerda + coluna de pizzas à direita, ligadas por linhas-guia."""
+def distribui_colunas(destaques, centros):
+    """Divide as RGIs destacadas em duas colunas que flanqueiam o mapa.
+
+    As mais a oeste vão para a coluna da esquerda, as mais a leste para a
+    direita, e dentro de cada coluna a ordem é de norte para sul. Assim as
+    linhas-guia saem de cada lado do mapa sem se cruzarem.
+
+    LADO_DESTAQUE sobrescreve a escolha automática, RGI por RGI.
+    """
+    com_centro = [(c, centros[c]) for c in destaques if c in centros]
+
+    fixos_esq = [t for t in com_centro if LADO_DESTAQUE.get(t[0]) == "esq"]
+    fixos_dir = [t for t in com_centro if LADO_DESTAQUE.get(t[0]) == "dir"]
+    livres = sorted(
+        [t for t in com_centro if t[0] not in LADO_DESTAQUE], key=lambda t: t[1][0]
+    )
+
+    # reparte os livres de forma a equilibrar as duas colunas
+    n_esq = max(0, (len(com_centro) // 2) - len(fixos_esq))
+    grupo_esq = fixos_esq + livres[:n_esq]
+    grupo_dir = fixos_dir + livres[n_esq:]
+
+    # dentro de cada coluna: norte no topo, sul embaixo
+    ordena = lambda g: [c for c, _ in sorted(g, key=lambda t: -t[1][1])]
+    return ordena(grupo_esq), ordena(grupo_dir)
+
+
+def nome_exibicao(cod, nome_ibge, idioma):
+    """Nome mostrado na pizza (permite sobrescrever o nome_rgi do IBGE)."""
+    return NOMES_EXIBICAO.get(cod, {}).get(idioma, nome_ibge)
+
+
+def monta_figura(
+    geo, por_rgi, agregado, destaques, arquivo, idioma, variante="gradiente"
+):
+    """Mapa no centro, pizzas nas duas laterais, ligadas por linhas-guia."""
     txt = TEXTOS[idioma]
     info = por_rgi.set_index("cod_rgi")
-    pizzas = [c for c in destaques if c in info.index]
-
-    fig_w, fig_h = 13.5, 7.6
-    fig = plt.figure(figsize=(fig_w, fig_h))
-    ax_mapa = fig.add_axes([0.01, 0.10, 0.60, 0.76])
-    norma = desenha_mapa(ax_mapa, geo, por_rgi, set(destaques))
-
-    # a coluna da direita recebe as RGIs destacadas e, no fim, o agregado.
-    # `lado` é a altura da caixa em fração de figura; a largura é corrigida
-    # pela razão de aspecto para a caixa ficar quadrada em polegadas.
-    n_pizzas = len(pizzas) + 1
-    faixa = 0.76 / n_pizzas
-    lado = min(faixa * 0.70, 0.30)
-    largura = lado * fig_h / fig_w
-    esquerda = 0.70
     centros = geo.set_index("id_regiao_imediata")["centro"].to_dict()
 
-    def caixa(i):
-        """Caixa da i-ésima pizza, centralizada na sua faixa vertical."""
-        centro_y = 0.86 - (i + 0.5) * faixa
-        return [esquerda, centro_y - lado / 2, largura, lado]
+    # só entram no coroplético as RGIs com amostra suficiente
+    shares = {
+        int(r.cod_rgi): r.share_publico
+        for r in por_rgi.itertuples()
+        if r.n >= N_MINIMO
+    }
 
-    for i, cod in enumerate(pizzas):
+    # a régua da variante "vs_referencia"
+    cod_ref = CFG["rgi_referencia"]
+    share_ref = info["share_publico"].get(cod_ref, np.nan)
+    if variante == "vs_referencia" and not np.isfinite(share_ref):
+        raise SystemExit(
+            f"RGI de referência {cod_ref} não tem dado — ajuste rgi_referencia."
+        )
+
+    presentes = [c for c in destaques if c in info.index]
+    esquerda, direita = distribui_colunas(presentes, centros)
+    if CFG["pos_total"] is None:  # sem lugar reservado: o total entra na coluna
+        direita = direita + [None]
+
+    fig_w, fig_h = CFG["fig"]
+    fig = plt.figure(figsize=(fig_w, fig_h))
+
+    # ---- geometria das colunas de pizza ----
+    n_max = max(len(esquerda), len(direita), 1)
+    # com muitas pizzas numa coluna, estica a faixa vertical disponível
+    topo, base = (0.87, 0.10) if n_max <= 6 else (0.895, 0.065)
+    faixa = (topo - base) / n_max
+    lado = min(faixa * 0.74, 0.30)  # altura da caixa, em fração de figura
+    largura = lado * fig_h / fig_w  # largura que deixa a caixa quadrada
+    # fontes menores conforme a coluna fica mais cheia, senão o título de uma
+    # pizza encosta no "n =" da pizza de cima
+    escala = 1.0 if n_max <= 3 else (0.82 if n_max <= 6 else 0.72)
+
+    # A fatia pública é fina e leva rótulo FORA da pizza, apontando para longe
+    # do mapa. Esse rótulo mora além da caixa dos eixos, então cada coluna
+    # precisa de uma folga externa, senão o texto sai cortado na borda da
+    # figura. `folga` = o quanto o rótulo avança além da caixa + o texto.
+    texto = 0.95 / fig_w  # largura reservada para "Público 8%" e a linha-guia
+    folga = 0.15 * largura + texto
+
+    margem = 0.008
+    x_esq = margem + folga
+    x_dir = 1 - margem - largura - folga
+
+    # o mapa ocupa o que sobra entre as colunas (colunas vazias não reservam)
+    vao = 0.02
+    borda_esq = (x_esq + largura + vao) if esquerda else 0.03
+    borda_dir = (1 - x_dir + vao) if direita else 0.03
+    ax_mapa = fig.add_axes(
+        [borda_esq, base - 0.03, 1 - borda_esq - borda_dir, topo - base + 0.03]
+    )
+    # ordem de empilhamento: mapa (0) < linhas-guia (2) < pizzas (3), então a
+    # linha aparece por cima do mapa mas passa POR TRÁS da pizza
+    ax_mapa.set_zorder(0)
+    norma = desenha_mapa(
+        ax_mapa, geo, shares, set(destaques), len(geo), variante, share_ref
+    )
+
+    def caixa(x0, i, n_col, desloca=0.0):
+        """Caixa da i-ésima pizza da coluna, centralizada na sua faixa."""
+        # colunas com menos pizzas ficam centradas verticalmente, e `desloca`
+        # permite subir/descer a coluna inteira para desviar linhas-guia
+        sobra = (n_max - n_col) * faixa / 2
+        centro_y = topo - sobra + desloca - (i + 0.5) * faixa
+        return [x0, centro_y - lado / 2, largura, lado]
+
+    def pizza_de_rgi(ax, cod, lado_rotulo):
         linha = info.loc[cod]
-        ax_p = fig.add_axes(caixa(i))
         desenha_pizza(
-            ax_p,
+            ax,
             linha["share_publico"],
             linha["share_privado"],
-            linha["nome_rgi"],
+            nome_exibicao(cod, linha["nome_rgi"], idioma),
             int(linha["n"]),
             txt,
-        )
-        # linha-guia do centróide da RGI até a borda esquerda da pizza
-        cx, cy = centros[cod]
-        fig.add_artist(
-            ConnectionPatch(
-                xyA=(cx, cy),
-                coordsA=ax_mapa.transData,
-                xyB=(-1.06, 0.0),
-                coordsB=ax_p.transData,
-                color=TINTA_MEDIA,
-                linewidth=1.2,
-                linestyle=(0, (4, 3)),
-                zorder=1,
-            )
+            escala,
+            lado_rotulo,
         )
 
-    # pizza do agregado, sem linha-guia (não corresponde a uma RGI)
-    ax_t = fig.add_axes(caixa(len(pizzas)))
-    desenha_pizza(
-        ax_t,
-        agregado["share_publico"],
-        agregado["share_privado"],
-        txt["total"].format(nome=NOME_AGREGADO[idioma]),
-        agregado["n"],
-        txt,
+    def pizza_do_total(ax, esc, lado_rotulo):
+        desenha_pizza(
+            ax,
+            agregado["share_publico"],
+            agregado["share_privado"],
+            txt["total"].format(nome=NOME_AGREGADO[idioma]),
+            agregado["n"],
+            txt,
+            esc,
+            lado_rotulo,
+        )
+
+    # ---- as duas colunas: rótulo para fora, linha-guia para dentro ----
+    colunas = (
+        (x_esq, esquerda, 1.06, "esq"),
+        (x_dir, direita, -1.06, "dir"),
     )
+    for x0, coluna, ancora, lado_rotulo in colunas:
+        desloca = CFG["desloca_coluna"].get(lado_rotulo, 0.0)
+        for i, cod in enumerate(coluna):
+            ax_p = fig.add_axes(caixa(x0, i, len(coluna), desloca))
+            ax_p.set_zorder(3)
+            if cod is None:  # o total, quando não tem lugar reservado
+                pizza_do_total(ax_p, escala, lado_rotulo)
+                continue
+            pizza_de_rgi(ax_p, cod, lado_rotulo)
+            # linha-guia do centróide da RGI até a borda interna da pizza
+            cx, cy = centros[cod]
+            fig.add_artist(
+                ConnectionPatch(
+                    xyA=(cx, cy),
+                    coordsA=ax_mapa.transData,
+                    xyB=(ancora, 0.0),
+                    coordsB=ax_p.transData,
+                    color=TINTA_MEDIA,
+                    linewidth=1.1,
+                    linestyle=(0, (4, 3)),
+                    zorder=2,
+                )
+            )
+
+    # ---- pizza do agregado em lugar reservado (rodada BR) ----
+    if CFG["pos_total"] is not None:
+        xc, yc, lado_t = CFG["pos_total"]
+        larg_t = lado_t * fig_h / fig_w
+        ax_t = fig.add_axes([xc - larg_t / 2, yc - lado_t / 2, larg_t, lado_t])
+        ax_t.set_zorder(3)
+        pizza_do_total(ax_t, escala * 1.25, CFG["lado_rotulo_total"])
 
     # ---- títulos ----
     fig.text(
-        0.02,
-        0.955,
+        0.015,
+        0.965,
         txt["titulo"],
-        fontsize=17,
+        fontsize=19,
         fontweight="bold",
         color=TINTA_FORTE,
     )
     fig.text(
-        0.02,
-        0.915,
+        0.015,
+        0.934,
         txt["subtitulo"],
-        fontsize=10.5,
+        fontsize=11.5,
         color=TINTA_MEDIA,
     )
 
     # Sem caixa de legenda: cada fatia já leva o próprio nome e percentual
     # escritos nela, então a identidade das categorias não depende da cor.
 
-    # ---- barra de cor do coroplético ----
-    ax_cb = fig.add_axes([0.05, 0.10, 0.20, 0.018])
-    barra = fig.colorbar(
-        mpl.cm.ScalarMappable(norm=norma, cmap=RAMPA_PUBLICO),
-        cax=ax_cb,
-        orientation="horizontal",
-    )
-    barra.set_label(txt["rotulo_barra"], fontsize=9, color=TINTA_MEDIA, labelpad=4)
-    barra.ax.tick_params(labelsize=8, colors=TINTA_MEDIA, length=2)
-    barra.outline.set_visible(False)
+    # ---- chave da cor do mapa: barra, legenda de duas classes, ou nada ----
+    x_barra, y_barra = CFG["pos_barra"][0], CFG["pos_barra"][1]
+    if variante == "gradiente":
+        ax_cb = fig.add_axes(CFG["pos_barra"])
+        barra = fig.colorbar(
+            mpl.cm.ScalarMappable(norm=norma, cmap=RAMPA_PUBLICO),
+            cax=ax_cb,
+            orientation="horizontal",
+            extend="both",  # a escala é cortada nos percentis: sinaliza as pontas
+        )
+        barra.set_label(
+            txt["rotulo_barra"], fontsize=9.5, color=TINTA_MEDIA, labelpad=4
+        )
+        barra.ax.tick_params(labelsize=8.5, colors=TINTA_MEDIA, length=2)
+        barra.outline.set_visible(False)
+    elif variante == "vs_referencia":
+        # duas classes só se explicam com legenda: nada no mapa diz o corte
+        nome_ref = nome_exibicao(
+            cod_ref, info.loc[cod_ref, "nome_rgi"], idioma
+        )
+        fig.legend(
+            handles=[
+                Patch(
+                    facecolor=COR_ACIMA,
+                    edgecolor=SUPERFICIE,
+                    label=txt["leg_acima"].format(nome=nome_ref, v=share_ref),
+                ),
+                Patch(
+                    facecolor=COR_ABAIXO,
+                    edgecolor=SUPERFICIE,
+                    label=txt["leg_abaixo"].format(nome=nome_ref),
+                ),
+            ],
+            # ancorada por BAIXO, no mesmo canto da barra de cor: crescer pra
+            # cima a mantém longe da pizza do agregado e da nota de fonte
+            loc="lower left",
+            bbox_to_anchor=(x_barra, max(y_barra - 0.02, 0.035)),
+            frameon=False,
+            fontsize=10,
+            labelcolor=TINTA_MEDIA,
+            handlelength=1.4,
+            handleheight=1.0,
+            borderaxespad=0,
+        )
 
-    fig.text(
-        0.02,
-        0.02,
-        txt["fonte"]
-        + (
-            txt["nota_estoque"]
-            if SOMENTE_VINCULOS_ATIVOS_3112
-            else txt["nota_fluxo"]
-        ),
-        fontsize=8.5,
-        color=TINTA_FRACA,
+    nota = txt["fonte"] + (
+        txt["nota_estoque"] if SOMENTE_VINCULOS_ATIVOS_3112 else txt["nota_fluxo"]
     )
+    # a ressalva do n mínimo só faz sentido onde a cor codifica algo
+    if N_MINIMO > 0 and variante != "nenhum":
+        nota += txt["nota_minimo"].format(n=N_MINIMO)
+    fig.text(0.015, 0.018, nota, fontsize=9, color=TINTA_FRACA)
 
     fig.savefig(arquivo + ".pdf", dpi=300)
-    fig.savefig(arquivo + ".png", dpi=200)
+    fig.savefig(arquivo + ".png", dpi=170)
     plt.close(fig)
-    print(f"  figura salva em {arquivo}.pdf / .png")
+    print(f"  {os.path.basename(arquivo)}.pdf / .png")
 
 
 # ----------------------------------------------------------------------------
-# 6) RODA
+# 7) RODA
 # ----------------------------------------------------------------------------
 def main():
+    refazer = "--rebuild" in sys.argv
+    print(f"RODADA = {RODADA}  ({len(UFS)} UF(s), {len(RGIS_DESTAQUE)} destaque(s))\n")
+
     print("1) polígonos das RGIs")
     geo = carrega_poligonos(UFS)
     rgis_validas = set(geo["id_regiao_imediata"].astype("int64"))
-    print(f"  {len(rgis_validas)} RGIs em {', '.join(UFS)}")
+    print(f"  {len(rgis_validas)} RGIs no recorte")
 
-    print("2) RAIS")
-    rais = carrega_rais(UFS)
+    print("\n2) painel da RAIS")
+    painel = carrega_painel(UFS, refazer=refazer)
 
-    print("3) agregação por RGI")
-    por_rgi, agregado = agrega_por_rgi(rais, rgis_validas)
+    print("\n3) agregação por RGI")
+    por_rgi, agregado = agrega_por_rgi(painel, rgis_validas)
 
-    # tabela no terminal, pra conferir os números que entram na figura
-    print("\n   Composição por RGI (vínculos formais, tempo integral, superior+):")
-    mostra = por_rgi[["cod_rgi", "nome_rgi", "n", "n_publico", "share_publico"]]
+    # tabela no terminal: os destaques, que são o que vai virar pizza
+    print("\n   RGIs destacadas:")
+    mostra = por_rgi[por_rgi["cod_rgi"].isin(RGIS_DESTAQUE)]
+    mostra = mostra[["cod_rgi", "nome_rgi", "n", "n_publico", "share_publico"]]
     print(mostra.to_string(index=False, float_format=lambda v: f"{v:.1f}"))
     print(
         f"\n   {NOME_AGREGADO['pt']}: {agregado['share_publico']:.1f}% público / "
         f"{agregado['share_privado']:.1f}% privado (n = {agregado['n']:,})"
     )
 
-    # salva a tabela pra reaproveitar depois sem reler a RAIS
+    faltando = set(RGIS_DESTAQUE) - set(por_rgi["cod_rgi"])
+    if faltando:
+        print(f"\n   ATENÇÃO: destaques sem dado: {sorted(faltando)}")
+
+    # salva a tabela completa pra reaproveitar sem reler o painel
     csv_saida = os.path.join(
-        DIR_OUTPUT, f"rais2023_publico_privado_rgi_{'_'.join(UFS)}.csv"
+        DIR_OUTPUT, f"rais2023_publico_privado_rgi_{SUFIXO_PAINEL}.csv"
     )
     por_rgi.to_csv(csv_saida, index=False)
-    print(f"\n   tabela salva em {csv_saida}")
+    print(f"\n   {len(por_rgi)} RGIs na tabela -> {csv_saida}")
 
     print("\n4) figuras")
-    sem_dado = rgis_validas - set(por_rgi["cod_rgi"])
-    if sem_dado:
-        print(f"  RGIs sem nenhum vínculo na amostra (cinza no mapa): {sorted(sem_dado)}")
-
-    # mesma figura em cada idioma pedido: só os textos mudam
-    for idioma in IDIOMAS:
-        monta_figura(
-            geo,
-            por_rgi,
-            agregado,
-            RGIS_DESTAQUE,
-            os.path.join(
-                DIR_FIGURES,
-                f"rais2023_mapa_publico_privado_{'_'.join(UFS)}_{idioma}",
-            ),
-            idioma,
-        )
+    # uma figura por (idioma x variante de cor do mapa)
+    for variante in VARIANTES_MAPA:
+        for idioma in IDIOMAS:
+            monta_figura(
+                geo,
+                por_rgi,
+                agregado,
+                RGIS_DESTAQUE,
+                os.path.join(
+                    DIR_FIGURES,
+                    f"rais2023_mapa_publico_privado_{SUFIXO_PAINEL}"
+                    f"_{SUFIXO_VARIANTE[variante]}_{idioma}",
+                ),
+                idioma,
+                variante,
+            )
 
 
 if __name__ == "__main__":
