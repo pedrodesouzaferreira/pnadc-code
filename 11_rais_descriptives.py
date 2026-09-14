@@ -178,6 +178,18 @@ LADO_DESTAQUE = {
 #   "vs_referencia" : duas classes, acima ou abaixo da RGI de referência
 VARIANTES_MAPA = ["gradiente", "nenhum", "vs_referencia"]
 
+# Multiplicador aplicado a TODA fonte da figura. 1.0 = tamanho de relatório.
+# Rodando com `--slides`, vira ESCALA_SLIDES e os arquivos ganham o sufixo
+# _slides — o mesmo desenho, com texto grande o bastante para projeção.
+ESCALA_FONTE = 1.0
+ESCALA_SLIDES = 1.45
+
+
+def fs(tamanho):
+    """Tamanho de fonte já multiplicado pela escala da rodada."""
+    return tamanho * ESCALA_FONTE
+
+
 SUFIXO_VARIANTE = {
     "gradiente": "gradiente",
     "nenhum": "sem_cor",
@@ -207,7 +219,14 @@ DIR_PNADC = os.environ.get("RAIS_PROJECT_ROOT") or os.path.normpath(
     os.path.join(AQUI, "..")
 )
 DIR_DATA = os.path.normpath(os.path.join(DIR_PNADC, ".."))
-DIR_RAIS = os.path.join(DIR_DATA, "RAIS_Workers", "Raw Data")
+# RAIS_RAW_DIR aponta a pasta dos CSVs para FORA do Dropbox. Isso importa:
+# dentro do Dropbox, arquivos grandes viram "placeholder" de 0 byte quando o
+# app resolve liberar espaço (atributo com.dropbox.placeholder), e a leitura
+# falha com "No columns to parse from file" — como se o arquivo tivesse sido
+# corrompido. Mantenha microdados fora de pasta sincronizada.
+DIR_RAIS = os.environ.get("RAIS_RAW_DIR") or os.path.join(
+    DIR_DATA, "RAIS_Workers", "Raw Data"
+)
 DIR_CLEANED = os.path.join(DIR_PNADC, "Cleaned Data")
 DIR_OUTPUT = os.path.join(DIR_PNADC, "Output")
 DIR_FIGURES = os.path.join(DIR_OUTPUT, "Figures")
@@ -312,9 +331,15 @@ TEXTOS = {
 # ----------------------------------------------------------------------------
 # 3) PAINEL — lê a RAIS em pedaços, filtra, empilha as UFs e grava .parquet
 # ----------------------------------------------------------------------------
+# `id_municipio` entra como RESERVA de `id_municipio_trabalho`: no extrato de
+# 2024 a coluna de município de TRABALHO vem vazia em ~99% das linhas, e sem a
+# reserva o merge descartaria quase a amostra inteira. Onde as duas existem,
+# a de trabalho é a certa (é onde o emprego de fato acontece); `id_municipio`
+# é o município de REGISTRO do estabelecimento, uma aproximação aceitável.
 COLUNAS_RAIS = [
     "sigla_uf",
     "id_municipio_trabalho",
+    "id_municipio",
     "quantidade_horas_contratadas",
     "grau_instrucao_apos_2005",
     "natureza_juridica",
@@ -322,7 +347,7 @@ COLUNAS_RAIS = [
 ]
 
 # colunas que o painel guarda (as outras só servem para filtrar)
-COLUNAS_PAINEL = ["sigla_uf", "id_municipio_trabalho", "natureza_juridica"]
+COLUNAS_PAINEL = ["sigla_uf", "id_municipio_merge", "natureza_juridica"]
 
 # códigos de natureza_juridica que são públicos apesar de > 2038 (binacionais)
 NJ_PUBLICO_EXTRA = {2194, 2208, 2275}
@@ -337,8 +362,9 @@ ETAPAS = [
     ("superior", "com ensino superior completo ou mais"),
     ("integral", "em tempo integral (≥36h)"),
     ("nj_def", "com natureza jurídica definida"),
-    ("ativos", "ativos em 31/12/2022"),
-    ("com_mun", "com município de trabalho"),
+    ("ativos", "ativos em 31/12"),
+    ("com_mun", "com município para o merge"),
+    ("sem_trab_usou_reg", "  destes, via município de registro (reserva)"),
 ]
 
 
@@ -371,8 +397,25 @@ def aplica_filtros(d, funil):
         d = d[d["vinculo_ativo_3112"] == 1]
     funil["ativos"] += len(d)
 
-    # município de trabalho é a chave do merge; sem ele não há como alocar
-    d = d[d["id_municipio_trabalho"].notna()]
+    # chave do merge: município de TRABALHO quando existe, senão o município
+    # de REGISTRO do estabelecimento. Sem nenhum dos dois não há como alocar.
+    d = d.copy()
+    trab = d["id_municipio_trabalho"] if "id_municipio_trabalho" in d else None
+    reg = d["id_municipio"] if "id_municipio" in d else None
+    if trab is not None and reg is not None:
+        d["id_municipio_merge"] = trab.fillna(reg)
+        funil["sem_trab_usou_reg"] += int(trab.isna().sum() - d["id_municipio_merge"].isna().sum())
+    elif trab is not None:
+        d["id_municipio_merge"] = trab
+    elif reg is not None:
+        d["id_municipio_merge"] = reg
+    else:
+        raise SystemExit(
+            "Nem id_municipio_trabalho nem id_municipio existem no arquivo — "
+            "não há chave para juntar com a RGI."
+        )
+
+    d = d[d["id_municipio_merge"].notna()]
     funil["com_mun"] += len(d)
 
     return d[COLUNAS_PAINEL]
@@ -393,10 +436,32 @@ def constroi_painel(ufs, caminho_saida):
             continue
 
         print(f"  {uf}: lendo {os.path.basename(caminho)} ...", flush=True)
+
+        # arquivo de 0 byte = placeholder do Dropbox (conteúdo só na nuvem).
+        # Sem esta checagem o erro aparece lá na frente como se fosse CSV
+        # corrompido.
+        if os.path.getsize(caminho) == 0:
+            print(f"    ATENÇÃO: {os.path.basename(caminho)} tem 0 byte — "
+                  "provável placeholder do Dropbox. Pulando.")
+            continue
+
+        # extratos diferentes trazem conjuntos de colunas diferentes: lê só o
+        # cabeçalho e pede a interseção, senão usecols estoura com KeyError
+        disponiveis = set(pd.read_csv(caminho, nrows=0).columns)
+        faltando_essencial = {
+            "quantidade_horas_contratadas",
+            "grau_instrucao_apos_2005",
+            "natureza_juridica",
+        } - disponiveis
+        if faltando_essencial:
+            print(f"    ATENÇÃO: faltam colunas {sorted(faltando_essencial)} — pulando")
+            continue
+        usar = [c for c in COLUNAS_RAIS if c in disponiveis]
+
         funil = {chave: 0 for chave, _ in ETAPAS}
         pedacos = []
         for pedaco in pd.read_csv(
-            caminho, usecols=COLUNAS_RAIS, chunksize=TAMANHO_CHUNK
+            caminho, usecols=usar, chunksize=TAMANHO_CHUNK
         ):
             filtrado = aplica_filtros(pedaco, funil)
             if len(filtrado):
@@ -415,9 +480,25 @@ def constroi_painel(ufs, caminho_saida):
     painel = pd.concat(partes, ignore_index=True)
 
     # tipos enxutos: o painel inteiro fica pequeno o bastante pra caber na RAM
-    painel["id_municipio_trabalho"] = painel["id_municipio_trabalho"].astype("int32")
+    painel["id_municipio_merge"] = painel["id_municipio_merge"].astype("int32")
     painel["natureza_juridica"] = painel["natureza_juridica"].astype("int16")
     painel["sigla_uf"] = painel["sigla_uf"].astype("category")
+
+    # a checagem que faltou na leva de 2023: sem natureza_juridica < 2000 não
+    # existe administração pública direta, e o emprego público zera na análise
+    n_adm = int((painel["natureza_juridica"] < 2000).sum())
+    if n_adm == 0:
+        raise SystemExit(
+            "\n" + "!" * 76 + "\n"
+            "ABORTADO: o painel não tem NENHUM vínculo de administração\n"
+            "pública direta (natureza_juridica < 2000). Foi exatamente esse o\n"
+            "defeito dos CSVs de 2023 baixados em out/2024 — o emprego público\n"
+            "sai perto de zero e o resultado não significa nada.\n"
+            "Rebaixe os dados antes de seguir (11a_rais_import_parallel.py).\n"
+            + "!" * 76
+        )
+    print(f"  administração pública direta: {n_adm:,} vínculos "
+          f"({100 * n_adm / len(painel):.1f}%)")
 
     painel.to_parquet(caminho_saida, index=False)
     mb = os.path.getsize(caminho_saida) / 1e6
@@ -461,7 +542,7 @@ def agrega_por_rgi(painel, rgis_validas=None):
 
     junto = painel.merge(
         chave,
-        left_on="id_municipio_trabalho",
+        left_on="id_municipio_merge",
         right_on="CD_GEOCODI",
         how="left",
         validate="m:1",
@@ -658,7 +739,7 @@ def desenha_pizza(
         wedgeprops={"edgecolor": SUPERFICIE, "linewidth": 2.0},
     )
 
-    fonte_rotulo = 10.5 * escala
+    fonte_rotulo = fs(10.5) * escala
     # rótulo direto: o número vai na fatia se ela couber, senão vai pra fora
     for fatia, valor, rotulo in zip(
         fatias,
@@ -701,7 +782,7 @@ def desenha_pizza(
 
     ax.set_title(
         titulo,
-        fontsize=12.5 * escala,
+        fontsize=fs(12.5) * escala,
         fontweight="bold",
         color=TINTA_FORTE,
         pad=8 * escala,
@@ -712,7 +793,7 @@ def desenha_pizza(
         f"n = {n:,}".replace(",", txt["sep_milhar"]),
         ha="center",
         va="top",
-        fontsize=9 * escala,
+        fontsize=fs(9) * escala,
         color=TINTA_FRACA,
         transform=ax.transData,
     )
@@ -893,7 +974,7 @@ def monta_figura(
         0.015,
         0.965,
         txt["titulo"],
-        fontsize=19,
+        fontsize=fs(19),
         fontweight="bold",
         color=TINTA_FORTE,
     )
@@ -901,7 +982,7 @@ def monta_figura(
         0.015,
         0.934,
         txt["subtitulo"],
-        fontsize=11.5,
+        fontsize=fs(11.5),
         color=TINTA_MEDIA,
     )
 
@@ -919,9 +1000,9 @@ def monta_figura(
             extend="both",  # a escala é cortada nos percentis: sinaliza as pontas
         )
         barra.set_label(
-            txt["rotulo_barra"], fontsize=9.5, color=TINTA_MEDIA, labelpad=4
+            txt["rotulo_barra"], fontsize=fs(9.5), color=TINTA_MEDIA, labelpad=4
         )
-        barra.ax.tick_params(labelsize=8.5, colors=TINTA_MEDIA, length=2)
+        barra.ax.tick_params(labelsize=fs(8.5), colors=TINTA_MEDIA, length=2)
         barra.outline.set_visible(False)
     elif variante == "vs_referencia":
         # duas classes só se explicam com legenda: nada no mapa diz o corte
@@ -946,7 +1027,7 @@ def monta_figura(
             loc="lower left",
             bbox_to_anchor=(x_barra, max(y_barra - 0.02, 0.035)),
             frameon=False,
-            fontsize=10,
+            fontsize=fs(10),
             labelcolor=TINTA_MEDIA,
             handlelength=1.4,
             handleheight=1.0,
@@ -959,7 +1040,7 @@ def monta_figura(
     # a ressalva do n mínimo só faz sentido onde a cor codifica algo
     if N_MINIMO > 0 and variante != "nenhum":
         nota += txt["nota_minimo"].format(n=N_MINIMO)
-    fig.text(0.015, 0.018, nota, fontsize=9, color=TINTA_FRACA)
+    fig.text(0.015, 0.018, nota, fontsize=fs(9), color=TINTA_FRACA)
 
     fig.savefig(arquivo + ".pdf", dpi=300)
     fig.savefig(arquivo + ".png", dpi=170)
@@ -971,8 +1052,15 @@ def monta_figura(
 # 7) RODA
 # ----------------------------------------------------------------------------
 def main():
+    global ESCALA_FONTE
     refazer = "--rebuild" in sys.argv
-    print(f"RODADA = {RODADA}  ({len(UFS)} UF(s), {len(RGIS_DESTAQUE)} destaque(s))\n")
+    slides = "--slides" in sys.argv
+    if slides:
+        ESCALA_FONTE = ESCALA_SLIDES
+    print(f"RODADA = {RODADA}  ({len(UFS)} UF(s), {len(RGIS_DESTAQUE)} destaque(s))")
+    if slides:
+        print(f"MODO SLIDES: fontes x{ESCALA_SLIDES}, arquivos com sufixo _slides")
+    print()
 
     print("1) polígonos das RGIs")
     geo = carrega_poligonos(UFS)
@@ -1018,7 +1106,8 @@ def main():
                 os.path.join(
                     DIR_FIGURES,
                     f"rais2022_mapa_publico_privado_{SUFIXO_PAINEL}"
-                    f"_{SUFIXO_VARIANTE[variante]}_{idioma}",
+                    f"_{SUFIXO_VARIANTE[variante]}_{idioma}"
+                    + ("_slides" if slides else ""),
                 ),
                 idioma,
                 variante,
