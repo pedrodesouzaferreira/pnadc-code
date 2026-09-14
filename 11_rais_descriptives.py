@@ -257,7 +257,10 @@ for _d in (DIR_CLEANED, DIR_OUTPUT, DIR_FIGURES):
 # ----------------------------------------------------------------------------
 COR_PUBLICO = "#2a78d6"
 COR_PRIVADO = "#eb6834"
-SUPERFICIE = "#fcfcfb"
+# Branco puro: a figura entra em slide de fundo branco, e um off-white
+# deixaria um retângulo visível em volta. SUPERFICIE também é a cor das
+# bordas entre RGIs e do vão entre as fatias da pizza, então tudo acompanha.
+SUPERFICIE = "#ffffff"
 SEM_DADO = "#e6e5e0"
 TINTA_FORTE = "#0b0b0b"
 TINTA_MEDIA = "#52514e"
@@ -301,8 +304,7 @@ TEXTOS = {
         "nota_estoque": "Vínculos ativos em 31/12/2022.",
         "nota_fluxo": "Todos os vínculos observados em 2022.",
         "nota_minimo": " RGIs com menos de {n} vínculos na amostra ficam em cinza.",
-        "leg_acima": "Emprego público ≥ {nome} ({v:.0f}%)",
-        "leg_abaixo": "Emprego público < {nome}",
+        "leg_acima": "Mais emprego público que {nome}",
     },
     "en": {
         "titulo": "Formal employment of college graduates: public or private",
@@ -322,8 +324,7 @@ TEXTOS = {
         "nota_estoque": "Jobs active on Dec 31, 2022.",
         "nota_fluxo": "All jobs observed during 2022.",
         "nota_minimo": " RGIs with fewer than {n} jobs in the sample are shown in grey.",
-        "leg_acima": "Public employment ≥ {nome} ({v:.0f}%)",
-        "leg_abaixo": "Public employment < {nome}",
+        "leg_acima": "More public sector employment than {nome}",
     },
 }
 
@@ -516,6 +517,26 @@ def carrega_painel(ufs, refazer=False):
         print(f"  reaproveitando o painel já existente ({ARQ_PAINEL})")
         painel = pd.read_parquet(ARQ_PAINEL)
         print(f"  {len(painel):,} linhas")
+
+        # Painel gravado ANTES da coluna de merge ganhar nome próprio: ali a
+        # chave se chamava `id_municipio_trabalho`. Renomear aqui evita ter
+        # de reconstruir o painel inteiro (horas de leitura de CSV) só por
+        # causa do nome da coluna.
+        if (
+            "id_municipio_merge" not in painel.columns
+            and "id_municipio_trabalho" in painel.columns
+        ):
+            print("  (painel antigo: id_municipio_trabalho -> id_municipio_merge)")
+            painel = painel.rename(
+                columns={"id_municipio_trabalho": "id_municipio_merge"}
+            )
+
+    if "id_municipio_merge" not in painel.columns:
+        raise SystemExit(
+            "O painel não tem a coluna de município para o merge.\n"
+            f"  colunas presentes: {sorted(painel.columns)}\n"
+            "  Reconstrua com --rebuild."
+        )
 
     nj = painel["natureza_juridica"]
     painel["publico"] = (nj <= NJ_CORTE_PUBLICO) | nj.isin(NJ_PUBLICO_EXTRA)
@@ -1009,17 +1030,16 @@ def monta_figura(
         nome_ref = nome_exibicao(
             cod_ref, info.loc[cod_ref, "nome_rgi"], idioma
         )
+        # Só a classe escura é rotulada: ela é a afirmação da figura. O azul
+        # claro é o "resto" e se entende por oposição, sem precisar de linha
+        # própria. Fonte maior que o resto da legenda porque essa frase é o
+        # que o público lê de longe.
         fig.legend(
             handles=[
                 Patch(
                     facecolor=COR_ACIMA,
                     edgecolor=SUPERFICIE,
-                    label=txt["leg_acima"].format(nome=nome_ref, v=share_ref),
-                ),
-                Patch(
-                    facecolor=COR_ABAIXO,
-                    edgecolor=SUPERFICIE,
-                    label=txt["leg_abaixo"].format(nome=nome_ref),
+                    label=txt["leg_acima"].format(nome=nome_ref),
                 ),
             ],
             # ancorada por BAIXO, no mesmo canto da barra de cor: crescer pra
@@ -1027,10 +1047,10 @@ def monta_figura(
             loc="lower left",
             bbox_to_anchor=(x_barra, max(y_barra - 0.02, 0.035)),
             frameon=False,
-            fontsize=fs(10),
-            labelcolor=TINTA_MEDIA,
-            handlelength=1.4,
-            handleheight=1.0,
+            fontsize=fs(13.5),
+            labelcolor=TINTA_FORTE,
+            handlelength=1.3,
+            handleheight=1.1,
             borderaxespad=0,
         )
 
@@ -1062,16 +1082,48 @@ def main():
         print(f"MODO SLIDES: fontes x{ESCALA_SLIDES}, arquivos com sufixo _slides")
     print()
 
+    # `--from-csv` reconstrói as figuras a partir da tabela por RGI já salva,
+    # sem tocar no painel nem nos CSVs da RAIS. Serve para refazer a figura
+    # noutra máquina levando só dois arquivos: essa tabela (poucos KB) e o
+    # CSV de polígonos. É assim que se gera a versão de slides sem ter os
+    # microdados por perto.
+    do_csv = "--from-csv" in sys.argv
+
     print("1) polígonos das RGIs")
     geo = carrega_poligonos(UFS)
     rgis_validas = set(geo["id_regiao_imediata"].astype("int64"))
     print(f"  {len(rgis_validas)} RGIs no recorte")
 
-    print("\n2) painel da RAIS")
-    painel = carrega_painel(UFS, refazer=refazer)
+    csv_saida = os.path.join(
+        DIR_OUTPUT, f"rais2022_publico_privado_rgi_{SUFIXO_PAINEL}.csv"
+    )
 
-    print("\n3) agregação por RGI")
-    por_rgi, agregado = agrega_por_rgi(painel, rgis_validas)
+    if do_csv:
+        print(f"\n2) lendo a tabela pronta: {csv_saida}")
+        if not os.path.exists(csv_saida):
+            raise SystemExit(
+                f"--from-csv precisa de {csv_saida}, que não existe.\n"
+                "Copie o CSV da máquina onde a rodada completa aconteceu."
+            )
+        por_rgi = pd.read_csv(csv_saida)
+        # o agregado é a soma das RGIs da tabela — idêntico ao que a rodada
+        # completa calcula, já que ela agrupa exatamente essas mesmas linhas
+        n = int(por_rgi["n"].sum())
+        n_pub = int(por_rgi["n_publico"].sum())
+        agregado = {
+            "n": n,
+            "n_publico": n_pub,
+            "n_privado": n - n_pub,
+            "share_publico": 100 * n_pub / n,
+            "share_privado": 100 - 100 * n_pub / n,
+        }
+        print(f"  {len(por_rgi)} RGIs")
+    else:
+        print("\n2) painel da RAIS")
+        painel = carrega_painel(UFS, refazer=refazer)
+
+        print("\n3) agregação por RGI")
+        por_rgi, agregado = agrega_por_rgi(painel, rgis_validas)
 
     # tabela no terminal: os destaques, que são o que vai virar pizza
     print("\n   RGIs destacadas:")
@@ -1088,11 +1140,10 @@ def main():
         print(f"\n   ATENÇÃO: destaques sem dado: {sorted(faltando)}")
 
     # salva a tabela completa pra reaproveitar sem reler o painel
-    csv_saida = os.path.join(
-        DIR_OUTPUT, f"rais2022_publico_privado_rgi_{SUFIXO_PAINEL}.csv"
-    )
-    por_rgi.to_csv(csv_saida, index=False)
-    print(f"\n   {len(por_rgi)} RGIs na tabela -> {csv_saida}")
+    # (no modo --from-csv ela é a ENTRADA, não faz sentido reescrever)
+    if not do_csv:
+        por_rgi.to_csv(csv_saida, index=False)
+        print(f"\n   {len(por_rgi)} RGIs na tabela -> {csv_saida}")
 
     print("\n4) figuras")
     # uma figura por (idioma x variante de cor do mapa)
