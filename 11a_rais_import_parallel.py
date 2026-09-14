@@ -59,8 +59,8 @@ ANO = 2024
 UFS = ['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS',
        'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC',
        'SE', 'SP', 'TO']
-UFS = ['DF', 'ES', 'GO', 'MA', 'MG', 'MS',
-       'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC',
+UFS = ['MG', 
+       'PA','PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC',
        'SE', 'SP', 'TO']
 
 WORKERS = 8         # UFs simultâneas (veja a nota de MEMÓRIA)

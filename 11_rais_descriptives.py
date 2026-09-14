@@ -310,7 +310,7 @@ TEXTOS = {
         "titulo": "Formal employment of college graduates: public or private",
         "subtitulo": (
             "Full-time formal jobs (≥36h/week) held by workers with a "
-            "completed college degree or above, by Immediate Geographic Region"
+            "completed college degree or above, by Commuting Zone"
         ),
         "publico": "Public",
         "privado": "Private",
@@ -318,12 +318,11 @@ TEXTOS = {
         "total": "{nome} (total)",
         "sep_milhar": ",",
         "fonte": (
-            "Source: RAIS 2022 (employment records), IBGE (Immediate Geographic "
-            "Regions, 2017). "
+            "Source: RAIS 2022, IBGE (Commuting Zones, 2017). "
         ),
         "nota_estoque": "Jobs active on Dec 31, 2022.",
         "nota_fluxo": "All jobs observed during 2022.",
-        "nota_minimo": " RGIs with fewer than {n} jobs in the sample are shown in grey.",
+        #"nota_minimo": " RGIs with fewer than {n} jobs in the sample are shown in grey.",
         "leg_acima": "More public sector employment than {nome}",
     },
 }
