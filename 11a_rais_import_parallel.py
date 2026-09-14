@@ -27,9 +27,10 @@ O QUE MUDA EM RELAÇÃO AO 11a_rais_import.py
 MEMÓRIA — leia antes de aumentar WORKERS
   `bd.read_sql` carrega a UF INTEIRA num DataFrame, igual ao script
   original. Com N threads, são N UFs na RAM ao mesmo tempo, e SP sozinho
-  passa de 20 milhões de vínculos. Por isso WORKERS começa em 3 e as UFs
-  vão da menor para a maior, para as gigantes não caírem todas juntas.
-  Se faltar memória, diminua WORKERS.
+  passa de 20 milhões de vínculos. Por isso WORKERS começa em 3.
+  As UFs estão em ordem alfabética; como MG, PR, RJ, RS, SC e SP ficam
+  perto do fim da lista, as maiores acabam coincidindo nas mesmas threads
+  na reta final. Se faltar memória, diminua WORKERS.
 
 ONDE GRAVAR
   Veja `folder`. Evite pasta do Dropbox: quando o disco enche, o app
@@ -58,9 +59,12 @@ ANO = 2024
 UFS = ['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS',
        'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC',
        'SE', 'SP', 'TO']
+UFS = ['DF', 'ES', 'GO', 'MA', 'MG', 'MS',
+       'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC',
+       'SE', 'SP', 'TO']
 
-WORKERS = 3          # UFs simultâneas (veja a nota de MEMÓRIA)
-FORCAR = False       # True = rebaixa mesmo se o CSV já existir
+WORKERS = 8         # UFs simultâneas (veja a nota de MEMÓRIA)
+FORCAR = True       # True = rebaixa mesmo se o CSV já existir
 
 print('Folder: ', folder)
 
