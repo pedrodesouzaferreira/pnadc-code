@@ -293,7 +293,7 @@ TEXTOS = {
         "titulo": "Emprego formal de nível superior: público ou privado",
         "subtitulo": (
             "Vínculos formais em tempo integral (≥36h) com ensino superior "
-            "completo ou mais, por Região Geográfica Imediata"
+            "completo ou mais, por Região Geográfica Imediata (RGI)"
         ),
         "publico": "Público",
         "privado": "Privado",
