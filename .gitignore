@@ -1,2 +1,39 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Data and outputs (recreated by the scripts)
+*.csv
+*.parquet
+*.dta
+*.rds
+*.feather
+*.pkl
+*.zip
+*.7z
+*.pdf
+*.png
+
+# Logs and Slurm output
+*.log
+slurm-*.out
+
+# Credentials (never commit)
+*.json
+.env
+*.pem
+
+# Editor / OS
+.DS_Store
+.Rhistory
+.RData
+*.swp
+_pre_minimization_backup/
+*conflicted copy*
+
+# Working notes
+HANDOFF_*.md
